@@ -69,6 +69,10 @@ struct nobita_target {
   size_t sources_size;
   char **sources;
 
+  size_t objects_used;
+  size_t objects_size;
+  char **objects;
+
   size_t ldflags_used;
   size_t ldflags_size;
   char **ldflags;
@@ -135,8 +139,7 @@ struct nobita_build {
       vector_append(dest, dest_name, (src)->src_name[nobita_iter_##src_name]); \
   } while (false)
 
-static struct nobita_target *nobita_build_add_target(Nobita_Build *b,
-                                                     const char *name) {
+static struct nobita_target *nobita_build_add_target(const char *name) {
   struct nobita_target *t = malloc(sizeof(*t));
   assert(t != NULL && "Buy more ram lol");
   t->name = malloc((strlen(name) + 1) * sizeof(char));
@@ -151,13 +154,14 @@ static struct nobita_target *nobita_build_add_target(Nobita_Build *b,
   t->ar_create_opts = NULL;
   vector_init(t, cflags);
   vector_init(t, sources);
+  vector_init(t, objects);
   vector_init(t, ldflags);
   vector_init(t, full_cmd);
   return t;
 }
 
 Nobita_Exe *Nobita_Build_Add_Exe(Nobita_Build *b, const char *name) {
-  Nobita_Exe *e = nobita_build_add_target(b, name);
+  Nobita_Exe *e = nobita_build_add_target(name);
   e->target_type = NOBITA_EXECUTABLE;
   vector_append(b, dep_exes, e);
   return e;
@@ -165,7 +169,7 @@ Nobita_Exe *Nobita_Build_Add_Exe(Nobita_Build *b, const char *name) {
 
 Nobita_Shared_Lib *Nobita_Build_Add_Shared_Lib(Nobita_Build *b,
                                                const char *name) {
-  Nobita_Shared_Lib *l = nobita_build_add_target(b, name);
+  Nobita_Shared_Lib *l = nobita_build_add_target(name);
   l->target_type = NOBITA_SHARED_LIB;
   vector_append(b, dep_libs, l);
   return l;
@@ -173,7 +177,7 @@ Nobita_Shared_Lib *Nobita_Build_Add_Shared_Lib(Nobita_Build *b,
 
 Nobita_Static_Lib *Nobita_Build_Add_Static_Lib(Nobita_Build *b,
                                                const char *name) {
-  Nobita_Shared_Lib *l = nobita_build_add_target(b, name);
+  Nobita_Shared_Lib *l = nobita_build_add_target(name);
   l->target_type = NOBITA_STATIC_LIB;
   vector_append(b, dep_libs, l);
   return l;
@@ -260,7 +264,25 @@ void Nobita_Target_Add_Sources(struct nobita_target *t, ...) {
     char *s = malloc((strlen(arg) + 1) * sizeof(char));
     assert(s != NULL && "Buy more ram lol");
     strcpy(s, arg);
+    char *o = malloc((strlen(arg) + 1) * sizeof(char));
+    assert(o != NULL && "Buy more ram lol");
+    strcpy(o, arg);
+
     vector_append(t, sources, s);
+
+    char *i = o + strlen(o) - 1;
+    size_t from_end = 0;
+    while (i > o) {
+      if (*i == '.') {
+        memset(i + 1, 0, from_end * sizeof(char));
+        i[1] = 'o';
+        vector_append(t, objects, o);
+        break;
+      }
+
+      i--;
+      from_end++;
+    }
 
     arg = va_arg(va, char *);
   }
@@ -311,12 +333,28 @@ static void fork_exec(char **cmd) {
   }
 }
 
+static void build_obj(struct nobita_target *t, size_t idx) {
+  vector_append(t, full_cmd, t->cc);
+  vector_append_vector(t, full_cmd, t, cflags);
+  vector_append(t, full_cmd, t->cc_out_file_opt);
+  vector_append(t, full_cmd, t->objects[idx]);
+  vector_append(t, full_cmd, t->cc_to_obj_opt);
+  vector_append(t, full_cmd, t->sources[idx]);
+  vector_append(t, full_cmd, NULL);
+
+  fork_exec(t->full_cmd);
+  t->full_cmd_used = 0;
+}
+
 static void build_exe(Nobita_Exe *e) {
+  for (size_t i = 0; i < e->objects_used; i++)
+    build_obj(e, i);
+
   vector_append(e, full_cmd, e->cc);
   vector_append_vector(e, full_cmd, e, cflags);
   vector_append(e, full_cmd, e->cc_out_file_opt);
   vector_append(e, full_cmd, e->name);
-  vector_append_vector(e, full_cmd, e, sources);
+  vector_append_vector(e, full_cmd, e, objects);
   vector_append_vector(e, full_cmd, e, ldflags);
   vector_append(e, full_cmd, NULL);
 
@@ -353,11 +391,15 @@ int main(void) {
     for (size_t ii = 0; ii < t->sources_used; ii++)
       free(t->sources[ii]);
 
+    for (size_t ii = 0; ii < t->objects_used; ii++)
+      free(t->objects[ii]);
+
     for (size_t ii = 0; ii < t->ldflags_used; ii++)
       free(t->ldflags[ii]);
 
     vector_free(t, cflags);
     vector_free(t, sources);
+    vector_free(t, objects);
     vector_free(t, ldflags);
     vector_free(t, full_cmd);
     free(t);

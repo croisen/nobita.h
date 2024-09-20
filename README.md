@@ -3,10 +3,10 @@
 
 ## TODOs
 
--   [ ] Be a header-only library
--   [ ] Build an executable
+-   [x] Be a header-only library
+-   [x] Build an executable
 -   [ ] Build a library
--   [ ] Build sources to object files first then link
+-   [x] Build sources to object files first then link
 -   [ ] Rebuild based on the last modification time of the source and output
         files
 -   [ ] Support the prefix directory
