@@ -8,6 +8,8 @@ typedef struct nobita_target Nobita_Static_Lib;
 
 extern void build(Nobita_Build *b);
 
+void Nobita_Try_Rebuild(Nobita_Build *b, const char *build_file);
+
 Nobita_Exe *Nobita_Build_Add_Exe(Nobita_Build *b, const char *name);
 Nobita_Shared_Lib *Nobita_Build_Add_Shared_Lib(Nobita_Build *b,
                                                const char *name);
@@ -38,6 +40,7 @@ void Nobita_Target_Add_LDflags(struct nobita_target *t, ...);
 #include <stdlib.h>
 #include <string.h>
 
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 
@@ -98,6 +101,10 @@ struct nobita_build {
   size_t dep_exes_used;
   size_t dep_exes_size;
   struct nobita_target **dep_exes;
+
+  int argc;
+  char **argv;
+  bool was_self_rebuilt;
 };
 
 #define vector_init(ptr, name)                                                 \
@@ -197,7 +204,7 @@ void Nobita_Target_Set_Build_Tools(struct nobita_target *t, const char *cc,
                       "building a library");
     } else {
       t->ar = malloc((strlen(ar) + 1) * sizeof(char));
-      assert(t->ar == NULL && "Buy more ram lol");
+      assert(t->ar != NULL && "Buy more ram lol");
       strcpy(t->ar, ar);
     }
   }
@@ -223,7 +230,7 @@ void Nobita_Target_Set_Build_Tool_Options(struct nobita_target *t,
                       "building a library");
     } else {
       t->ar_create_opts = malloc((strlen(ar_create_opts) + 1) * sizeof(char));
-      assert(t->ar_create_opts == NULL && "Buy more ram lol");
+      assert(t->ar_create_opts != NULL && "Buy more ram lol");
       strcpy(t->ar_create_opts, ar_create_opts);
     }
   }
@@ -333,6 +340,55 @@ static void fork_exec(char **cmd) {
   }
 }
 
+static bool is_a_newer(char *a, char *b) {
+  struct stat s_a, s_b;
+  memset(&s_a, 0, sizeof(s_a));
+  memset(&s_b, 0, sizeof(s_b));
+  stat(a, &s_a);
+  stat(b, &s_b);
+
+  return (s_a.st_mtime > s_b.st_mtime);
+}
+
+void Nobita_Try_Rebuild(Nobita_Build *b, const char *build_file) {
+  char *build_exe = *b->argv;
+  char *nobita = __FILE__;
+
+  if (is_a_newer(build_exe, (char *)build_file) &&
+      is_a_newer(build_exe, nobita))
+    return;
+
+  struct nobita_target e;
+  vector_init(&e, full_cmd);
+#if defined(__clang__)
+  vector_append(&e, full_cmd, "clang");
+#elif defined(_GNUC_)
+  vector_append(&e, full_cmd, "gcc");
+#else
+  vector_append(&e, full_cmd, "cc");
+#endif
+
+  vector_append(&e, full_cmd, "-Wall");
+  vector_append(&e, full_cmd, "-Wextra");
+  vector_append(&e, full_cmd, "-Wpedantic");
+  vector_append(&e, full_cmd, "-O3");
+  vector_append(&e, full_cmd, "-g");
+  vector_append(&e, full_cmd, "-o");
+  vector_append(&e, full_cmd, build_exe);
+  vector_append(&e, full_cmd, (char *)build_file);
+  vector_append(&e, full_cmd, NULL);
+
+  fork_exec(e.full_cmd);
+  e.full_cmd_used = 0;
+  for (int i = 0; i < b->argc; i++)
+    vector_append(&e, full_cmd, b->argv[i]);
+
+  vector_append(&e, full_cmd, NULL);
+  fork_exec(e.full_cmd);
+  vector_free(&e, full_cmd);
+  b->was_self_rebuilt = true;
+}
+
 static void build_obj(struct nobita_target *t, size_t idx) {
   vector_append(t, full_cmd, t->cc);
   vector_append_vector(t, full_cmd, t, cflags);
@@ -347,8 +403,17 @@ static void build_obj(struct nobita_target *t, size_t idx) {
 }
 
 static void build_exe(Nobita_Exe *e) {
-  for (size_t i = 0; i < e->objects_used; i++)
-    build_obj(e, i);
+  bool relink = false;
+  for (size_t i = 0; i < e->objects_used; i++) {
+    if (!is_a_newer(e->objects[i], e->sources[i])) {
+      build_obj(e, i);
+      relink = true;
+    }
+  }
+
+  struct stat exe;
+  if (!relink && stat(e->name, &exe) != -1)
+    return;
 
   vector_append(e, full_cmd, e->cc);
   vector_append_vector(e, full_cmd, e, cflags);
@@ -361,15 +426,19 @@ static void build_exe(Nobita_Exe *e) {
   fork_exec(e->full_cmd);
 }
 
-int main(void) {
+int main(int argc, char **argv) {
   struct nobita_build b;
   vector_init(&b, dep_libs);
   vector_init(&b, dep_exes);
+  b.argc = argc;
+  b.argv = argv;
+  b.was_self_rebuilt = false;
 
   build(&b);
 
-  for (size_t i = 0; i < b.dep_exes_used; i++)
-    build_exe(b.dep_exes[i]);
+  if (!b.was_self_rebuilt)
+    for (size_t i = 0; i < b.dep_exes_used; i++)
+      build_exe(b.dep_exes[i]);
 
   for (size_t i = 0; i < b.dep_libs_used + b.dep_exes_used; i++) {
     struct nobita_target *t;

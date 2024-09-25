@@ -2,6 +2,8 @@
 #include "nobita-linux.h"
 
 void build(Nobita_Build *b) {
+  Nobita_Try_Rebuild(b, __FILE__);
+
   Nobita_Exe *hello = Nobita_Build_Add_Exe(b, "hello");
   Nobita_Target_Set_Build_Tools(hello, "cc", NULL);
   Nobita_Target_Set_Build_Tool_Options(hello, "-c", "-o", NULL);

@@ -7,8 +7,9 @@
 -   [x] Build an executable
 -   [ ] Build a library
 -   [x] Build sources to object files first then link
--   [ ] Rebuild based on the last modification time of the source and output
+-   [x] Rebuild based on the last modification time of the source and output
         files
+-   [x] Rebuild the build executable if it's sources are newer
 -   [ ] Support the prefix directory
 -   [ ] Allow multiple commands to occur at once
 -   [ ] Be crossplatform
