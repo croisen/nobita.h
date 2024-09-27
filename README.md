@@ -17,7 +17,7 @@ try
 
 -   [x] Be a header-only library
 -   [x] Build an executable
--   [ ] Build a library
+-   [x] Build a library
 -   [x] Build sources to object files first then link
 -   [x] Rebuild based on the last modification time of the source and output
         files
