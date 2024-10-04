@@ -22,8 +22,8 @@ try
 -   [x] Rebuild based on the last modification time of the source and output
         files
 -   [x] Rebuild the build executable if it's sources are newer
--   [ ] Support the prefix directory
+-   [x] Support the prefix directory
 -   [ ] Allow multiple commands to occur at once
--   [ ] Have a cache directory to dump the object files in, instead of being
+-   [x] Have a cache directory to dump the object files in, instead of being
         next to their respective source files
 -   [ ] Be crossplatform

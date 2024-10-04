@@ -2,5 +2,7 @@
 *.a
 *.so
 
+/nobita-build/
+
 /build
 /hello
