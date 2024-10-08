@@ -51,6 +51,8 @@ void Nobita_Target_Add_Cflags(struct nobita_target *t, ...);
 void Nobita_Target_Add_Sources(struct nobita_target *t, ...);
 void Nobita_Target_Add_LDflags(struct nobita_target *t, ...);
 void Nobita_Target_Add_Deps(struct nobita_target *t, ...);
+void Nobita_Target_Add_Headers(struct nobita_target *t, const char *parent,
+                               ...);
 
 #endif /* NOBITA_LINUX_H */
 
@@ -64,17 +66,21 @@ void Nobita_Target_Add_Deps(struct nobita_target *t, ...);
 #include <stdlib.h>
 #include <string.h>
 
+#include <libgen.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
-
-#include <libgen.h>
 #include <unistd.h>
 
 enum nobita_target_type {
   NOBITA_EXECUTABLE,
   NOBITA_SHARED_LIB,
   NOBITA_STATIC_LIB,
+};
+
+struct nobita_header {
+  char *parent;
+  char *header;
 };
 
 struct nobita_target {
@@ -111,6 +117,10 @@ struct nobita_target {
   size_t full_cmd_size;
   char **full_cmd;
 
+  size_t headers_used;
+  size_t headers_size;
+  struct nobita_header *headers;
+
   size_t deps_used;
   size_t deps_size;
   // nobita_target - Well clangd keeps bugging me with suspicious
@@ -138,6 +148,7 @@ static char *nobita_dir_append(const char *prefix, ...);
 static void nobita_mkdir_recursive(const char *path);
 static bool nobita_is_a_newer(char *a, char *b);
 static void nobita_build_target(struct nobita_target *t);
+static void nobita_cp(const char *dest, const char *src);
 
 #define vector_init(ptr, name)                                                 \
   do {                                                                         \
@@ -294,9 +305,6 @@ void Nobita_Target_Add_Sources(struct nobita_target *t, ...) {
     assert(o != NULL && "Buy more ram lol");
     strcpy(o, arg);
 
-    char *s1 = nobita_dir_append(cwd, s, NULL);
-    vector_append(t, sources, s1);
-
     char *i = o + strlen(o) - 1;
     size_t from_end = 0;
     while (i > o) {
@@ -310,17 +318,17 @@ void Nobita_Target_Add_Sources(struct nobita_target *t, ...) {
       from_end++;
     }
 
-    char *o1 = nobita_dir_append(cwd, "nobita-cache", o, NULL);
+    char *o1 = nobita_dir_append("nobita-cache", o, NULL);
     char *o2 = strdup(o1);
     assert(o2 != NULL && "Buy more ram lol");
+    char *o3 = dirname(o2);
+    nobita_mkdir_recursive(o3);
 
+    vector_append(t, sources, s);
     vector_append(t, objects, o1);
-    dirname(o2);
-    nobita_mkdir_recursive(o2);
-    free(o2);
 
-    free(s);
     free(o);
+    free(o2);
 
     arg = va_arg(va, char *);
   }
@@ -399,6 +407,25 @@ void Nobita_Try_Rebuild(Nobita_Build *b, const char *build_file) {
   b->was_self_rebuilt = true;
 }
 
+void Nobita_Target_Add_Headers(struct nobita_target *t, const char *parent,
+                               ...) {
+  assert(parent != NULL && "When adding header files to a target, the parent "
+                           "dir should not be NULL");
+  struct nobita_header h;
+  h.parent = (char *)parent;
+
+  va_list va;
+  va_start(va, parent);
+  char *arg = va_arg(va, char *);
+  while (arg != NULL) {
+    h.header = arg;
+    vector_append(t, headers, h);
+    arg = va_arg(va, char *);
+  }
+
+  va_end(va);
+}
+
 static struct nobita_target *nobita_build_add_target(struct nobita_build *b,
                                                      const char *name) {
   struct nobita_target *t = malloc(sizeof(*t));
@@ -420,6 +447,7 @@ static struct nobita_target *nobita_build_add_target(struct nobita_build *b,
   vector_init(t, objects);
   vector_init(t, ldflags);
   vector_init(t, full_cmd);
+  vector_init(t, headers);
   vector_init(t, deps);
 
   vector_append(b, deps, t);
@@ -553,10 +581,10 @@ static void nobita_build_target(struct nobita_target *t) {
   char *include = nobita_dir_append(prefix, "include", NULL);
   char *output = NULL;
 
-  mkdir(prefix, 0777);
-  mkdir(bin, 0777);
-  mkdir(lib, 0777);
-  mkdir(include, 0777);
+  nobita_mkdir_recursive(prefix);
+  nobita_mkdir_recursive(bin);
+  nobita_mkdir_recursive(lib);
+  nobita_mkdir_recursive(include);
 
   switch (t->target_type) {
   case NOBITA_EXECUTABLE: {
@@ -616,6 +644,25 @@ static void nobita_build_target(struct nobita_target *t) {
 
   vector_append(t, full_cmd, NULL);
   nobita_fork_exec(t->full_cmd);
+
+  if (t->target_type != NOBITA_EXECUTABLE) {
+    for (size_t i = 0; i < t->headers_used; i++) {
+      char *parent = t->headers[i].parent;
+      char *header = t->headers[i].header;
+      char *header_cp = nobita_dir_append(include, header, NULL);
+      char *header_dir = dirname(header_cp);
+      nobita_mkdir_recursive(header_dir);
+
+      char *src = nobita_dir_append(parent, header, NULL);
+      char *dest = nobita_dir_append(include, header, NULL);
+      nobita_cp(dest, src);
+
+      free(header_cp);
+      free(src);
+      free(dest);
+    }
+  }
+
   t->rebuilt = true;
 
 end:
@@ -627,6 +674,26 @@ end:
   free(bin);
   free(lib);
   free(include);
+}
+
+static void nobita_cp(const char *dest, const char *src) {
+  FILE *d = fopen(dest, "w");
+  assert(d != NULL && "Failed to open dest file in copying");
+  FILE *s = fopen(src, "r");
+  assert(s != NULL && "Failed to open src file in copying");
+
+  char buf[4096];
+  while (true) {
+    size_t read = fread(buf, sizeof(char), 4096, s);
+    if (!read)
+      break;
+
+    size_t write = fwrite(buf, sizeof(char), read, d);
+    assert(read == write && "Read and Write count did not match in copying");
+  }
+
+  fclose(d);
+  fclose(s);
 }
 
 int main(int argc, char **argv) {
@@ -670,6 +737,7 @@ int main(int argc, char **argv) {
     vector_free(t, objects);
     vector_free(t, ldflags);
     vector_free(t, full_cmd);
+    vector_free(t, headers);
     vector_free(t, deps);
     free(t);
   }

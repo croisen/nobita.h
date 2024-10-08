@@ -23,7 +23,8 @@ try
         files
 -   [x] Rebuild the build executable if it's sources are newer
 -   [x] Support the prefix directory
--   [ ] Allow multiple commands to occur at once
 -   [x] Have a cache directory to dump the object files in, instead of being
         next to their respective source files
+-   [x] Copy the header files into the prefix include directory
+-   [ ] Allow multiple commands to occur at once
 -   [ ] Be crossplatform

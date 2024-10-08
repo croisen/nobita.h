@@ -20,4 +20,5 @@ void build(Nobita_Build *b) {
   Nobita_Target_Set_Build_Tool_Options(test2, "-c", "-o", "-shared", "rcs");
   Nobita_Target_Add_Sources(test2, "test-src/test-lib.c", NULL);
   Nobita_Target_Add_Deps(hello, test2, NULL);
+  Nobita_Target_Add_Headers(test2, "3rd_party", "openssl/sha.h", NULL);
 }
