@@ -26,5 +26,7 @@ try
 -   [x] Have a cache directory to dump the object files in, instead of being
         next to their respective source files
 -   [x] Copy the header files into the prefix include directory
+-   [x] Custom error handling
+-   [ ] Support for custom commands
 -   [ ] Allow multiple commands to occur at once
 -   [ ] Be crossplatform
