@@ -27,16 +27,26 @@ typedef struct nobita_build Nobita_Build;
 typedef struct nobita_target Nobita_Exe;
 typedef struct nobita_target Nobita_Shared_Lib;
 typedef struct nobita_target Nobita_Static_Lib;
+typedef struct nobita_target Nobita_CMD;
+
+enum nobita_argtype {
+  NOBITA_T_CFLAGS,
+  NOBITA_T_LDFLAGS,
+  NOBITA_T_CUSTOM_CMD,
+};
 
 extern void build(Nobita_Build *b);
 
 void Nobita_Try_Rebuild(Nobita_Build *b, const char *build_file);
+
+void Nobita_Free_Later(Nobita_Build *b, void *ptr);
 
 Nobita_Exe *Nobita_Build_Add_Exe(Nobita_Build *b, const char *name);
 Nobita_Shared_Lib *Nobita_Build_Add_Shared_Lib(Nobita_Build *b,
                                                const char *name);
 Nobita_Static_Lib *Nobita_Build_Add_Static_Lib(Nobita_Build *b,
                                                const char *name);
+Nobita_CMD *Nobita_Build_Add_CMD(Nobita_Build *b, const char *name);
 
 void Nobita_Target_Set_Build_Tools(struct nobita_target *t, const char *cc,
                                    const char *ar);
@@ -46,6 +56,15 @@ void Nobita_Target_Set_Build_Tool_Options(struct nobita_target *t,
                                           const char *cc_shared_lib_opt,
                                           const char *ar_create_opts);
 // void Nobita_Target_Set_Prefix(struct nobita_target *t, const char *prefix);
+void Nobita_CMD_Add_Args(Nobita_CMD *c, ...);
+
+#ifdef __GNUC__
+void Nobita_Target_Add_Fmt_Arg(struct nobita_target *t, enum nobita_argtype a,
+                               const char *fmt, ...)
+    __attribute__((format(printf, 3, 4)));
+#else
+void Nobita_Target_Add_Fmt_Arg(struct nobita_target *t, const char *fmt, ...);
+#endif /* __GNUC__ */
 
 void Nobita_Target_Add_Cflags(struct nobita_target *t, ...);
 void Nobita_Target_Add_Sources(struct nobita_target *t, ...);
@@ -77,6 +96,7 @@ enum nobita_target_type {
   NOBITA_EXECUTABLE,
   NOBITA_SHARED_LIB,
   NOBITA_STATIC_LIB,
+  NOBITA_CUSTOM_CMD,
 };
 
 struct nobita_header {
@@ -118,23 +138,29 @@ struct nobita_target {
   size_t full_cmd_size;
   char **full_cmd;
 
+  size_t custom_cmd_used;
+  size_t custom_cmd_size;
+  char **custom_cmd;
+
   size_t headers_used;
   size_t headers_size;
   struct nobita_header *headers;
 
   size_t deps_used;
   size_t deps_size;
-  // nobita_target - Well clangd keeps bugging me with suspicious
-  // sizeof deref uses sooo
   void **deps;
+
+  struct nobita_build *b;
 };
 
 struct nobita_build {
   size_t deps_used;
   size_t deps_size;
-  // nobita_target - Well clangd keeps bugging me with suspicious
-  // sizeof deref uses sooo
   void **deps;
+
+  size_t free_later_used;
+  size_t free_later_size;
+  void **free_later;
 
   int argc;
   char **argv;
@@ -215,6 +241,10 @@ static bool nobita_build_failed = false;
       vector_append(dest, dest_name, (src)->src_name[nobita_iter_##src_name]); \
   } while (false)
 
+void Nobita_Free_Later(Nobita_Build *b, void *ptr) {
+  vector_append(b, free_later, ptr);
+}
+
 Nobita_Exe *Nobita_Build_Add_Exe(Nobita_Build *b, const char *name) {
   if (nobita_build_failed)
     return NULL;
@@ -257,6 +287,20 @@ Nobita_Static_Lib *Nobita_Build_Add_Static_Lib(Nobita_Build *b,
 
 ret:
   return l;
+}
+
+Nobita_CMD *Nobita_Add_CMD(Nobita_Build *b, const char *name) {
+  if (nobita_build_failed)
+    return NULL;
+
+  Nobita_CMD *c = nobita_build_add_target(b, name);
+  if (c == NULL)
+    goto ret;
+
+  c->target_type = NOBITA_CUSTOM_CMD;
+
+ret:
+  return c;
 }
 
 void Nobita_Target_Set_Build_Tools(struct nobita_target *t, const char *cc,
@@ -429,6 +473,63 @@ void Nobita_Target_Add_Deps(struct nobita_target *t, ...) {
   va_end(va);
 }
 
+void Nobita_CMD_Add_Args(Nobita_CMD *c, ...) {
+  if (nobita_build_failed)
+    return;
+
+  va_list va;
+  va_start(va, c);
+
+  char *arg = va_arg(va, char *);
+  while (arg != NULL) {
+    vector_append(c, custom_cmd, arg);
+    arg = va_arg(va, char *);
+  }
+
+  va_end(va);
+}
+
+void Nobita_Target_Add_Fmt_Arg(struct nobita_target *t, enum nobita_argtype a,
+                               const char *fmt, ...) {
+  if (nobita_build_failed)
+    return;
+
+  va_list va;
+  va_start(va, fmt);
+  ssize_t arglen = vsnprintf(NULL, 0, fmt, va) + 1;
+  va_end(va);
+
+  char *arg = malloc(arglen * sizeof(char));
+  if (arg == NULL) {
+    fprintf(stderr, "Failed to add formatted arg to target %s\n", t->name);
+    nobita_build_failed = true;
+    return;
+  }
+
+  va_start(va, fmt);
+  vsprintf(arg, fmt, va);
+  va_end(va);
+
+  switch (a) {
+  case NOBITA_T_CFLAGS: {
+    vector_append(t, cflags, arg);
+    break;
+  }
+  case NOBITA_T_LDFLAGS: {
+    vector_append(t, ldflags, arg);
+    break;
+  }
+  case NOBITA_T_CUSTOM_CMD: {
+    vector_append(t, custom_cmd, arg);
+    break;
+  }
+  default:
+    break;
+  }
+
+  Nobita_Free_Later(t->b, arg);
+}
+
 void Nobita_Try_Rebuild(Nobita_Build *b, const char *build_file) {
   char *build_exe = *b->argv;
   char *nobita = __FILE__;
@@ -523,10 +624,12 @@ static struct nobita_target *nobita_build_add_target(struct nobita_build *b,
   vector_init(t, objects);
   vector_init(t, ldflags);
   vector_init(t, full_cmd);
+  vector_init(t, custom_cmd);
   vector_init(t, headers);
   vector_init(t, deps);
 
   vector_append(b, deps, t);
+  t->b = b;
   return t;
 }
 
@@ -690,21 +793,25 @@ static void nobita_build_target(struct nobita_target *t) {
     rebuild = (!rebuild) ? ((struct nobita_target *)t->deps[i])->rebuilt : true;
   }
 
-  for (size_t i = 0; i < t->objects_used; i++) {
-    if (!nobita_is_a_newer(t->objects[i], t->sources[i]) || rebuild) {
-      vector_append(t, full_cmd, t->cc);
-      vector_append_vector(t, full_cmd, t, cflags);
-      vector_append(t, full_cmd, t->cc_out_file_opt);
-      vector_append(t, full_cmd, t->objects[i]);
-      vector_append(t, full_cmd, t->cc_to_obj_opt);
-      vector_append(t, full_cmd, t->sources[i]);
-      vector_append(t, full_cmd, NULL);
+  if (t->target_type != NOBITA_CUSTOM_CMD)
+    for (size_t i = 0; i < t->objects_used; i++) {
+      if (!nobita_is_a_newer(t->objects[i], t->sources[i]) || rebuild) {
+        vector_append(t, full_cmd, t->cc);
+        vector_append_vector(t, full_cmd, t, cflags);
+        vector_append(t, full_cmd, t->cc_out_file_opt);
+        vector_append(t, full_cmd, t->objects[i]);
+        vector_append(t, full_cmd, t->cc_to_obj_opt);
+        vector_append(t, full_cmd, t->sources[i]);
+        vector_append(t, full_cmd, NULL);
 
-      nobita_fork_exec(t->full_cmd);
-      t->full_cmd_used = 0;
-      rebuild = true;
+        nobita_fork_exec(t->full_cmd);
+        t->full_cmd_used = 0;
+        rebuild = true;
+      }
     }
-  }
+
+  if (t->target_type == NOBITA_CUSTOM_CMD)
+    goto cmd;
 
   char *name = malloc((strlen(t->name) + 7) * sizeof(char));
   if (name == NULL) {
@@ -755,6 +862,9 @@ static void nobita_build_target(struct nobita_target *t) {
     output = nobita_dir_append(lib, name, NULL);
     break;
   }
+  case NOBITA_CUSTOM_CMD: {
+    break;
+  }
   }
 
   if (!rebuild)
@@ -781,6 +891,9 @@ static void nobita_build_target(struct nobita_target *t) {
   case NOBITA_STATIC_LIB: {
     vector_append(t, full_cmd, t->ar);
     vector_append(t, full_cmd, t->ar_create_opts);
+    break;
+  }
+  case NOBITA_CUSTOM_CMD: {
     break;
   }
   }
@@ -823,6 +936,14 @@ end:
   free(bin);
   free(lib);
   free(include);
+  return;
+
+cmd:
+  vector_append(t, custom_cmd, NULL);
+  t->built = true;
+
+  if (t->custom_cmd_used >= 1)
+    nobita_fork_exec(t->custom_cmd);
 }
 
 static void nobita_cp(const char *dest, const char *src) {
@@ -871,6 +992,8 @@ end:
 int main(int argc, char **argv) {
   struct nobita_build b;
   vector_init(&b, deps);
+  vector_init(&b, free_later);
+
   b.argc = argc;
   b.argv = argv;
   b.was_self_rebuilt = false;
@@ -891,12 +1014,17 @@ int main(int argc, char **argv) {
     vector_free(t, objects);
     vector_free(t, ldflags);
     vector_free(t, full_cmd);
+    vector_free(t, custom_cmd);
     vector_free(t, headers);
     vector_free(t, deps);
     free(t);
   }
 
+  for (size_t i = 0; i < b.free_later_used; i++)
+    free(b.free_later[i]);
+
   vector_free(&b, deps);
+  vector_free(&b, free_later);
 }
 
 #endif /* NOBITA_LINUX_IMPL */

@@ -21,4 +21,9 @@ void build(Nobita_Build *b) {
   Nobita_Target_Add_Sources(test2, "test-src/test-lib.c", NULL);
   Nobita_Target_Add_Deps(hello, test2, NULL);
   Nobita_Target_Add_Headers(test2, "3rd_party", "openssl/sha.h", NULL);
+
+  Nobita_CMD *test3 = Nobita_Add_CMD(b, "test");
+  Nobita_CMD_Add_Args(test3, "echo", NULL);
+  Nobita_Target_Add_Fmt_Arg(test3, NOBITA_T_CUSTOM_CMD, "**%s**\n",
+                            "Hello, Croisen!");
 }
