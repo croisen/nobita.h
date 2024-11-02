@@ -28,5 +28,5 @@ try
 -   [x] Copy the header files into the prefix include directory
 -   [x] Custom error handling
 -   [x] Support for custom commands
--   [ ] Allow multiple commands to occur at once
+-   [x] Allow multiple commands to occur at once
 -   [ ] Be crossplatform

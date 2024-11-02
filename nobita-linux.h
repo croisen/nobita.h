@@ -92,6 +92,8 @@ void Nobita_Target_Add_Headers(struct nobita_target *t, const char *parent,
 #include <sys/wait.h>
 #include <unistd.h>
 
+typedef pid_t nobita_pid;
+
 enum nobita_target_type {
   NOBITA_EXECUTABLE,
   NOBITA_SHARED_LIB,
@@ -162,6 +164,10 @@ struct nobita_build {
   size_t free_later_size;
   void **free_later;
 
+  size_t proc_queue_used;
+  size_t proc_queue_size;
+  nobita_pid *proc_queue;
+
   int argc;
   char **argv;
   bool was_self_rebuilt;
@@ -171,7 +177,13 @@ char *strdup(const char *);
 static struct nobita_target *nobita_build_add_target(struct nobita_build *b,
                                                      const char *name);
 
-static void nobita_fork_exec(char **cmd);
+static nobita_pid nobita_proc_exec(char **cmd);
+static int nobita_proc_wait(nobita_pid pid, bool pause);
+
+static void nobita_proc_append(struct nobita_build *b, char **cmd);
+static void nobita_proc_wait_one(struct nobita_build *b);
+static void nobita_proc_wait_all(struct nobita_build *b);
+
 static void nobita_mkdir_recursive(const char *path);
 static bool nobita_is_a_newer(char *a, char *b);
 static bool nobita_file_exist(char *path);
@@ -182,6 +194,7 @@ static char *nobita_dir_append(const char *prefix, ...);
 static void nobita_cp(const char *dest, const char *src);
 
 static bool nobita_build_failed = false;
+static size_t nobita_max_proc_count = 4;
 
 #define vector_init(ptr, name)                                                 \
   do {                                                                         \
@@ -559,13 +572,15 @@ void Nobita_Try_Rebuild(Nobita_Build *b, const char *build_file) {
   vector_append(&e, full_cmd, (char *)build_file);
   vector_append(&e, full_cmd, NULL);
 
-  nobita_fork_exec(e.full_cmd);
+  nobita_pid id = nobita_proc_exec(e.full_cmd);
+  nobita_proc_wait(id, true);
   e.full_cmd_used = 0;
   for (int i = 0; i < b->argc; i++)
     vector_append(&e, full_cmd, b->argv[i]);
 
   vector_append(&e, full_cmd, NULL);
-  nobita_fork_exec(e.full_cmd);
+  id = nobita_proc_exec(e.full_cmd);
+  nobita_proc_wait(id, true);
   vector_free(&e, full_cmd);
   b->was_self_rebuilt = true;
 }
@@ -633,54 +648,99 @@ static struct nobita_target *nobita_build_add_target(struct nobita_build *b,
   return t;
 }
 
-static void nobita_fork_exec(char **cmd) {
-  if (nobita_build_failed)
-    return;
+static nobita_pid nobita_proc_exec(char **cmd) {
+  nobita_pid id = -1;
 
-  pid_t id = fork();
+  if (nobita_build_failed)
+    return id;
+
+  id = fork();
   if (id == -1) {
     fprintf(stderr, "Fork failed\n");
     nobita_build_failed = true;
-    return;
+    return id;
   }
 
   if (id == 0) {
     execvp(*cmd, cmd);
     exit(errno);
   } else {
-    size_t full_cmd_len = 1;
-    char *full_cmd = NULL;
-    char **cmd2 = cmd;
-    while (*cmd2 != NULL) {
-      full_cmd_len += strlen(*cmd2) + 1;
-      cmd2++;
-    }
-
-    full_cmd = calloc(full_cmd_len, sizeof(char));
-    while (*cmd) {
-      strcat(full_cmd, *cmd);
-      strcat(full_cmd, " ");
-      cmd++;
-    }
-
-    int status;
-    printf("%s\n", full_cmd);
-    waitpid(id, &status, 0);
-    if (!WIFEXITED(status)) {
-      fprintf(stderr, "Process '%s' did not exit properly\n", full_cmd);
-      nobita_build_failed = true;
-      goto end;
-    }
-
-    if (WEXITSTATUS(status) != EXIT_SUCCESS) {
-      fprintf(stderr, "Process '%s' exitted unsuccessfully\n", full_cmd);
-      nobita_build_failed = true;
-      goto end;
-    }
-
-  end:
-    free(full_cmd);
+    return id;
   }
+}
+
+static int nobita_proc_wait(nobita_pid pid, bool pause) {
+  int status = -1;
+  waitpid(pid, &status, (pause) ? 0 : WNOHANG);
+  return status;
+}
+
+static void nobita_proc_append(struct nobita_build *b, char **cmd) {
+  if (nobita_build_failed)
+    return;
+
+  if (b->proc_queue_used >= nobita_max_proc_count)
+    nobita_proc_wait_one(b);
+
+  if (nobita_build_failed)
+    return;
+
+  char **c = cmd;
+  while (true) {
+    printf("%s", *c);
+    c += 1;
+    if (*c != NULL)
+      printf(" ");
+    else
+      break;
+  }
+
+  printf("\n");
+  nobita_pid pid = nobita_proc_exec(cmd);
+  vector_append(b, proc_queue, pid);
+}
+
+static void nobita_proc_wait_one(struct nobita_build *b) {
+  bool continue_loop = !nobita_build_failed;
+  while (continue_loop) {
+    for (size_t i = 0; i < b->proc_queue_used; i++) {
+      int status = nobita_proc_wait(b->proc_queue[i], false);
+      if (status != -1 && WIFEXITED(status)) {
+        nobita_pid p = b->proc_queue[i];
+        b->proc_queue[i] = b->proc_queue[b->proc_queue_used - 1];
+        b->proc_queue[b->proc_queue_used - 1] = p;
+        b->proc_queue_used -= 1;
+
+        status = nobita_proc_wait(p, true);
+        if (WEXITSTATUS(status) != EXIT_SUCCESS) {
+          nobita_build_failed = true;
+          fprintf(
+              stderr,
+              "A process did not exit sucessfully, marking build as failed\n");
+        }
+
+        continue_loop = false;
+        break;
+      }
+    }
+  }
+}
+
+static void nobita_proc_wait_all(struct nobita_build *b) {
+  for (size_t i = 0; i < b->proc_queue_used; i++) {
+    int status = nobita_proc_wait(b->proc_queue[i], true);
+    if (!WIFEXITED(status) && !nobita_build_failed) {
+      nobita_build_failed = true;
+      fprintf(stderr, "A process did not exit successfully\n");
+    }
+
+    if (WEXITSTATUS(status) != EXIT_SUCCESS && !nobita_build_failed) {
+      nobita_build_failed = true;
+      fprintf(stderr, "A process did not exit successfully\n");
+    }
+  }
+
+  b->proc_queue_used = 0;
 }
 
 static char *nobita_dir_append(const char *prefix, ...) {
@@ -793,6 +853,7 @@ static void nobita_build_target(struct nobita_target *t) {
     rebuild = (!rebuild) ? ((struct nobita_target *)t->deps[i])->rebuilt : true;
   }
 
+  nobita_proc_wait_all(t->b);
   if (t->target_type != NOBITA_CUSTOM_CMD)
     for (size_t i = 0; i < t->objects_used; i++) {
       if (!nobita_is_a_newer(t->objects[i], t->sources[i]) || rebuild) {
@@ -804,11 +865,15 @@ static void nobita_build_target(struct nobita_target *t) {
         vector_append(t, full_cmd, t->sources[i]);
         vector_append(t, full_cmd, NULL);
 
-        nobita_fork_exec(t->full_cmd);
+        if (t->sources_used > 0)
+          nobita_proc_append(t->b, t->full_cmd);
+
         t->full_cmd_used = 0;
         rebuild = true;
       }
     }
+
+  nobita_proc_wait_all(t->b);
 
   if (t->target_type == NOBITA_CUSTOM_CMD)
     goto cmd;
@@ -905,7 +970,9 @@ static void nobita_build_target(struct nobita_target *t) {
     vector_append_vector(t, full_cmd, t, ldflags);
 
   vector_append(t, full_cmd, NULL);
-  nobita_fork_exec(t->full_cmd);
+
+  if (t->sources_used > 0)
+    nobita_proc_append(t->b, t->full_cmd);
 
   if (t->target_type != NOBITA_EXECUTABLE) {
     for (size_t i = 0; i < t->headers_used; i++) {
@@ -943,7 +1010,7 @@ cmd:
   t->built = true;
 
   if (t->custom_cmd_used >= 1)
-    nobita_fork_exec(t->custom_cmd);
+    nobita_proc_append(t->b, t->custom_cmd);
 }
 
 static void nobita_cp(const char *dest, const char *src) {
@@ -993,6 +1060,7 @@ int main(int argc, char **argv) {
   struct nobita_build b;
   vector_init(&b, deps);
   vector_init(&b, free_later);
+  vector_init(&b, proc_queue);
 
   b.argc = argc;
   b.argv = argv;
@@ -1020,11 +1088,14 @@ int main(int argc, char **argv) {
     free(t);
   }
 
+  nobita_proc_wait_all(&b);
+
   for (size_t i = 0; i < b.free_later_used; i++)
     free(b.free_later[i]);
 
   vector_free(&b, deps);
   vector_free(&b, free_later);
+  vector_free(&b, proc_queue);
 }
 
 #endif /* NOBITA_LINUX_IMPL */
