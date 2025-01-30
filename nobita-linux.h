@@ -86,13 +86,20 @@ void Nobita_Target_Add_Headers(struct nobita_target *t, const char *parent,
 #include <stdlib.h>
 #include <string.h>
 
-#include <libgen.h>
+#ifndef _WIN32
+
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 typedef pid_t nobita_pid;
+#define NOBITA_PATHSEP "/"
+#define NOBITA_EXECUT_EXT ".elf"
+#define NOBITA_SHARED_EXT ".so"
+#define NOBITA_STATIC_EXT ".a"
+
+#endif /* _WIN32 */
 
 enum nobita_target_type {
   NOBITA_EXECUTABLE,
@@ -171,9 +178,15 @@ struct nobita_build {
   int argc;
   char **argv;
   bool was_self_rebuilt;
+
+  char *ced;
+  char *cwd;
+  char *prefix;
+  char *include;
+  char *bin;
+  char *lib;
 };
 
-char *strdup(const char *);
 static struct nobita_target *nobita_build_add_target(struct nobita_build *b,
                                                      const char *name);
 
@@ -190,8 +203,12 @@ static bool nobita_file_exist(char *path);
 static bool nobita_dir_exist(char *path);
 
 static void nobita_build_target(struct nobita_target *t);
-static char *nobita_dir_append(const char *prefix, ...);
 static void nobita_cp(const char *dest, const char *src);
+static char *nobita_strjoin(const char *join, ...);
+static char *nobita_getcwd(void);
+static char *nobita_getced(const char *arv0);
+static char *nobita_strdup(const char *);
+static void nobita_dirname(char *p);
 
 static bool nobita_build_failed = false;
 static size_t nobita_max_proc_count = 4;
@@ -415,42 +432,36 @@ void Nobita_Target_Add_Sources(struct nobita_target *t, ...) {
 
   va_list va;
   va_start(va, t);
-  char *cwd = getcwd(NULL, 0);
-  if (cwd == NULL) {
-    fprintf(stderr, "Could not get current working directory\n");
-    nobita_build_failed = true;
-    return;
-  }
 
   char *arg = va_arg(va, char *);
   while (arg != NULL) {
-    char *o = nobita_dir_append("nobita-cache", arg, NULL);
+    char *o =
+        nobita_strjoin(NOBITA_PATHSEP, t->b->ced, "nobita-cache", arg, NULL);
     char *i = strrchr(o, '.');
     i[1] = 'o';
     i[2] = 0;
 
-    char *o2 = strdup(o);
+    char *o2 = nobita_strdup(o);
     if (o2 == NULL) {
       fprintf(stderr,
               "Could not get object counterpart of source: %s for target %s\n",
               arg, t->name);
       nobita_build_failed = true;
-      free(cwd);
       va_end(va);
       return;
     }
 
-    char *o3 = dirname(o2);
-    nobita_mkdir_recursive(o3);
+    nobita_dirname(o2);
+    nobita_mkdir_recursive(o2);
 
-    vector_append(t, sources, arg);
+    vector_append(t, sources,
+                  nobita_strjoin(NOBITA_PATHSEP, t->b->ced, arg, NULL));
     vector_append(t, objects, o);
 
     free(o2);
     arg = va_arg(va, char *);
   }
 
-  free(cwd);
   va_end(va);
 }
 
@@ -743,56 +754,11 @@ static void nobita_proc_wait_all(struct nobita_build *b) {
   b->proc_queue_used = 0;
 }
 
-static char *nobita_dir_append(const char *prefix, ...) {
-  if (nobita_build_failed)
-    return NULL;
-
-  size_t len = 2 + strlen(prefix);
-  va_list va;
-  va_start(va, prefix);
-
-  char *arg = va_arg(va, char *);
-  while (true) {
-    len += strlen(arg);
-    arg = va_arg(va, char *);
-    if (arg != NULL)
-      len += 1;
-    else
-      break;
-  }
-
-  va_end(va);
-
-  char *append = malloc(len * sizeof(char));
-  if (append == NULL) {
-    fprintf(stderr, "Failed to allocate memory for str concat\n");
-    nobita_build_failed = true;
-    return NULL;
-  }
-
-  strcpy(append, prefix);
-  strcat(append, "/");
-  va_start(va, prefix);
-
-  arg = va_arg(va, char *);
-  while (true) {
-    strcat(append, arg);
-    arg = va_arg(va, char *);
-    if (arg != NULL)
-      strcat(append, "/");
-    else
-      break;
-  }
-
-  va_end(va);
-  return append;
-}
-
 static void nobita_mkdir_recursive(const char *path) {
   if (nobita_build_failed)
     return;
 
-  char *p2 = strdup(path);
+  char *p2 = nobita_strdup(path);
   if (p2 == NULL) {
     fprintf(stderr, "Could not copy path '%s' for mkdir recursive\n", path);
     nobita_build_failed = true;
@@ -801,18 +767,22 @@ static void nobita_mkdir_recursive(const char *path) {
 
   size_t len = strlen(p2);
   for (size_t i = 1; i < len; i++) {
-    if (p2[i] == '/') {
+    if (p2[i] == *NOBITA_PATHSEP) {
       p2[i] = 0;
 
-      if (!nobita_dir_exist(p2))
+      if (!nobita_dir_exist(p2)) {
+        printf("nobita_mkdir %s\n", p2);
         mkdir(p2, 0777);
+      }
 
-      p2[i] = '/';
+      p2[i] = *NOBITA_PATHSEP;
     }
   }
 
-  if (!nobita_dir_exist(p2))
+  if (!nobita_dir_exist(p2)) {
+    printf("nobita_mkdir %s\n", p2);
     mkdir(p2, 0777);
+  }
 
   free(p2);
 }
@@ -874,57 +844,23 @@ static void nobita_build_target(struct nobita_target *t) {
     }
 
   nobita_proc_wait_all(t->b);
-
-  if (t->target_type == NOBITA_CUSTOM_CMD)
-    goto cmd;
-
-  char *name = malloc((strlen(t->name) + 7) * sizeof(char));
-  if (name == NULL) {
-    fprintf(stderr, "Could not copy target name '%s' in build target\n",
-            t->name);
-    nobita_build_failed = true;
-    return;
-  }
-
-  char *cwd = getcwd(NULL, 0);
-  if (cwd == NULL) {
-    fprintf(stderr,
-            "Could get current working directory for target name '%s' in build "
-            "target\n",
-            t->name);
-    nobita_build_failed = true;
-    return;
-  }
-
-  char *prefix = nobita_dir_append(cwd, "nobita-build", NULL);
-  char *bin = nobita_dir_append(prefix, "bin", NULL);
-  char *lib = nobita_dir_append(prefix, "lib", NULL);
-  char *include = nobita_dir_append(prefix, "include", NULL);
+  char *name = NULL;
   char *output = NULL;
-
-  nobita_mkdir_recursive(prefix);
-  nobita_mkdir_recursive(bin);
-  nobita_mkdir_recursive(lib);
-  nobita_mkdir_recursive(include);
 
   switch (t->target_type) {
   case NOBITA_EXECUTABLE: {
-    strcpy(name, t->name);
-    output = nobita_dir_append(bin, name, NULL);
+    name = nobita_strjoin("", t->name, NOBITA_EXECUT_EXT, NULL);
+    output = nobita_strjoin(NOBITA_PATHSEP, t->b->bin, name, NULL);
     break;
   }
   case NOBITA_SHARED_LIB: {
-    strcpy(name, "lib");
-    strcat(name, t->name);
-    strcat(name, ".so");
-    output = nobita_dir_append(lib, name, NULL);
+    name = nobita_strjoin("", "lib", t->name, NOBITA_SHARED_EXT, NULL);
+    output = nobita_strjoin(NOBITA_PATHSEP, t->b->lib, name, NULL);
     break;
   }
   case NOBITA_STATIC_LIB: {
-    strcpy(name, "lib");
-    strcat(name, t->name);
-    strcat(name, ".a");
-    output = nobita_dir_append(lib, name, NULL);
+    name = nobita_strjoin("", "lib", t->name, NOBITA_STATIC_EXT, NULL);
+    output = nobita_strjoin(NOBITA_PATHSEP, t->b->lib, name, NULL);
     break;
   }
   case NOBITA_CUSTOM_CMD: {
@@ -936,7 +872,7 @@ static void nobita_build_target(struct nobita_target *t) {
     for (size_t i = 0; i < t->objects_used; i++)
       rebuild = (!rebuild) ? nobita_is_a_newer(t->objects[i], output) : true;
 
-  if (!rebuild)
+  if (!rebuild && t->target_type != NOBITA_CUSTOM_CMD)
     goto end;
 
   switch (t->target_type) {
@@ -944,6 +880,9 @@ static void nobita_build_target(struct nobita_target *t) {
     vector_append(t, full_cmd, t->cc);
     vector_append_vector(t, full_cmd, t, cflags);
     vector_append(t, full_cmd, t->cc_out_file_opt);
+    vector_append(t, full_cmd, output);
+    vector_append_vector(t, full_cmd, t, objects);
+    vector_append_vector(t, full_cmd, t, ldflags);
     break;
   }
   case NOBITA_SHARED_LIB: {
@@ -951,39 +890,39 @@ static void nobita_build_target(struct nobita_target *t) {
     vector_append_vector(t, full_cmd, t, cflags);
     vector_append(t, full_cmd, t->cc_shared_lib_opt);
     vector_append(t, full_cmd, t->cc_out_file_opt);
+    vector_append(t, full_cmd, output);
+    vector_append_vector(t, full_cmd, t, objects);
+    vector_append_vector(t, full_cmd, t, ldflags);
     break;
   }
   case NOBITA_STATIC_LIB: {
     vector_append(t, full_cmd, t->ar);
     vector_append(t, full_cmd, t->ar_create_opts);
+    vector_append(t, full_cmd, output);
+    vector_append_vector(t, full_cmd, t, objects);
     break;
   }
   case NOBITA_CUSTOM_CMD: {
+    vector_append_vector(t, full_cmd, t, custom_cmd);
     break;
   }
   }
 
-  vector_append(t, full_cmd, output);
-  vector_append_vector(t, full_cmd, t, objects);
-
-  if (t->target_type != NOBITA_STATIC_LIB)
-    vector_append_vector(t, full_cmd, t, ldflags);
-
   vector_append(t, full_cmd, NULL);
-
-  if (t->sources_used > 0)
+  if (t->sources_used > 0 || t->target_type == NOBITA_CUSTOM_CMD)
     nobita_proc_append(t->b, t->full_cmd);
 
   if (t->target_type != NOBITA_EXECUTABLE) {
     for (size_t i = 0; i < t->headers_used; i++) {
       char *parent = t->headers[i].parent;
       char *header = t->headers[i].header;
-      char *header_cp = nobita_dir_append(include, header, NULL);
-      char *header_dir = dirname(header_cp);
-      nobita_mkdir_recursive(header_dir);
+      char *header_cp =
+          nobita_strjoin(NOBITA_PATHSEP, t->b->include, header, NULL);
+      nobita_dirname(header_cp);
+      nobita_mkdir_recursive(header_cp);
 
-      char *src = nobita_dir_append(parent, header, NULL);
-      char *dest = nobita_dir_append(include, header, NULL);
+      char *src = nobita_strjoin(NOBITA_PATHSEP, parent, header, NULL);
+      char *dest = nobita_strjoin(NOBITA_PATHSEP, t->b->include, header, NULL);
       nobita_cp(dest, src);
 
       free(header_cp);
@@ -998,19 +937,6 @@ end:
   t->built = true;
   free(name);
   free(output);
-  free(cwd);
-  free(prefix);
-  free(bin);
-  free(lib);
-  free(include);
-  return;
-
-cmd:
-  vector_append(t, custom_cmd, NULL);
-  t->built = true;
-
-  if (t->custom_cmd_used >= 1)
-    nobita_proc_append(t->b, t->custom_cmd);
 }
 
 static void nobita_cp(const char *dest, const char *src) {
@@ -1056,8 +982,109 @@ end:
   fclose(s);
 }
 
+static char *nobita_strjoin(const char *join, ...) {
+  if (nobita_build_failed)
+    return NULL;
+
+  char *ret = NULL;
+  size_t len = 1;
+
+  char *arg = NULL;
+  va_list va;
+  va_start(va, join);
+  arg = va_arg(va, char *);
+  while (arg != NULL) {
+    len += strlen(arg);
+    arg = va_arg(va, char *);
+    if (arg != NULL)
+      len += strlen(join);
+  }
+  va_end(va);
+
+  ret = malloc(len * sizeof(char));
+  if (ret == NULL) {
+    fprintf(stderr,
+            "Could not join strings using strjoin as malloc returned NULL\n");
+    nobita_build_failed = true;
+    return ret;
+  }
+
+  va_start(va, join);
+  *ret = 0;
+  arg = va_arg(va, char *);
+  while (arg != NULL) {
+    strcat(ret, arg);
+    arg = va_arg(va, char *);
+    if (arg != NULL)
+      strcat(ret, join);
+  }
+  va_end(va);
+
+  return ret;
+}
+
+static char *nobita_getcwd(void) {
+  char *ret = getcwd(NULL, 0);
+  if (ret == NULL) {
+    fprintf(stderr, "Couldn't get current working directory\n");
+    nobita_build_failed = true;
+  }
+
+  return ret;
+}
+
+static char *nobita_getced(const char *argv0) {
+  char *ret = NULL;
+  char *exe = nobita_strdup(argv0);
+  char *cwd = nobita_getcwd();
+  nobita_dirname(exe);
+  chdir(exe);
+  ret = nobita_getcwd();
+  chdir(cwd);
+  free(exe);
+  free(cwd);
+
+  return ret;
+}
+
+static char *nobita_strdup(const char *s) {
+  char *ret = malloc((strlen(s) + 1) * sizeof(char));
+  if (ret == NULL) {
+    fprintf(stderr, "Could not duplicate a string as malloc returned NULL\n");
+    nobita_build_failed = true;
+  } else {
+    strcpy(ret, s);
+  }
+
+  return ret;
+}
+
+static void nobita_dirname(char *p) {
+  char *s = strrchr(p, *NOBITA_PATHSEP);
+  if (s == NULL) {
+    p[0] = '.';
+    p[1] = 0;
+    return;
+  }
+
+  *s = 0;
+}
+
 int main(int argc, char **argv) {
   struct nobita_build b;
+
+  char *ced = nobita_getced(argv[0]);
+  char *cwd = nobita_getcwd();
+  char *prefix = nobita_strjoin(NOBITA_PATHSEP, cwd, "nobita-build", NULL);
+  char *include = nobita_strjoin(NOBITA_PATHSEP, prefix, "include", NULL);
+  char *bin = nobita_strjoin(NOBITA_PATHSEP, prefix, "bin", NULL);
+  char *lib = nobita_strjoin(NOBITA_PATHSEP, prefix, "lib", NULL);
+
+  nobita_mkdir_recursive(prefix);
+  nobita_mkdir_recursive(bin);
+  nobita_mkdir_recursive(lib);
+  nobita_mkdir_recursive(include);
+
   vector_init(&b, deps);
   vector_init(&b, free_later);
   vector_init(&b, proc_queue);
@@ -1065,6 +1092,13 @@ int main(int argc, char **argv) {
   b.argc = argc;
   b.argv = argv;
   b.was_self_rebuilt = false;
+
+  b.ced = ced;
+  b.cwd = cwd;
+  b.prefix = prefix;
+  b.include = include;
+  b.bin = bin;
+  b.lib = lib;
 
   build(&b);
 
@@ -1074,8 +1108,10 @@ int main(int argc, char **argv) {
 
   for (size_t i = 0; i < b.deps_used; i++) {
     struct nobita_target *t = b.deps[i];
-    for (size_t ii = 0; ii < t->objects_used; ii++)
+    for (size_t ii = 0; ii < t->objects_used; ii++) {
+      free(t->sources[ii]);
       free(t->objects[ii]);
+    }
 
     vector_free(t, cflags);
     vector_free(t, sources);
@@ -1096,6 +1132,13 @@ int main(int argc, char **argv) {
   vector_free(&b, deps);
   vector_free(&b, free_later);
   vector_free(&b, proc_queue);
+
+  free(ced);
+  free(cwd);
+  free(prefix);
+  free(include);
+  free(bin);
+  free(lib);
 }
 
 #endif /* NOBITA_LINUX_IMPL */
