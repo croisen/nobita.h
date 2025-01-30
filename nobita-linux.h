@@ -88,6 +88,7 @@ void Nobita_Target_Add_Headers(struct nobita_target *t, const char *parent,
 
 #ifndef _WIN32
 
+#include <glob.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -435,30 +436,45 @@ void Nobita_Target_Add_Sources(struct nobita_target *t, ...) {
 
   char *arg = va_arg(va, char *);
   while (arg != NULL) {
-    char *o =
-        nobita_strjoin(NOBITA_PATHSEP, t->b->ced, "nobita-cache", arg, NULL);
-    char *i = strrchr(o, '.');
-    i[1] = 'o';
-    i[2] = 0;
-
-    char *o2 = nobita_strdup(o);
-    if (o2 == NULL) {
-      fprintf(stderr,
-              "Could not get object counterpart of source: %s for target %s\n",
+    glob_t g;
+    if (glob(arg, 0, NULL, &g) != 0) {
+      fprintf(stderr, "Glob error for pattern %s in add source to target %s\n",
               arg, t->name);
       nobita_build_failed = true;
       va_end(va);
       return;
     }
 
-    nobita_dirname(o2);
-    nobita_mkdir_recursive(o2);
+    for (size_t ii = 0; ii < g.gl_pathc; ii++) {
+      char *o = nobita_strjoin(NOBITA_PATHSEP, t->b->ced, "nobita-cache",
+                               g.gl_pathv[ii], NULL);
+      char *i = strrchr(o, '.');
+      i[1] = 'o';
+      i[2] = 0;
 
-    vector_append(t, sources,
-                  nobita_strjoin(NOBITA_PATHSEP, t->b->ced, arg, NULL));
-    vector_append(t, objects, o);
+      char *o2 = nobita_strdup(o);
+      if (o2 == NULL) {
+        fprintf(
+            stderr,
+            "Could not get object counterpart of source: %s for target %s\n",
+            arg, t->name);
+        nobita_build_failed = true;
+        va_end(va);
+        return;
+      }
 
-    free(o2);
+      nobita_dirname(o2);
+      nobita_mkdir_recursive(o2);
+
+      vector_append(
+          t, sources,
+          nobita_strjoin(NOBITA_PATHSEP, t->b->ced, g.gl_pathv[ii], NULL));
+      vector_append(t, objects, o);
+
+      free(o2);
+    }
+
+    globfree(&g);
     arg = va_arg(va, char *);
   }
 
@@ -506,7 +522,19 @@ void Nobita_CMD_Add_Args(Nobita_CMD *c, ...) {
 
   char *arg = va_arg(va, char *);
   while (arg != NULL) {
-    vector_append(c, custom_cmd, arg);
+    glob_t g;
+    if (glob(arg, GLOB_NOCHECK, NULL, &g) != 0) {
+      fprintf(stderr, "The glob pattern %s for custom command %s is invalid!\n",
+              arg, c->name);
+      nobita_build_failed = true;
+      va_end(va);
+      return;
+    }
+
+    for (size_t i = 0; i < g.gl_pathc; i++)
+      vector_append(c, custom_cmd, g.gl_pathv[i]);
+
+    free(g.gl_pathv);
     arg = va_arg(va, char *);
   }
 
@@ -537,10 +565,12 @@ void Nobita_Target_Add_Fmt_Arg(struct nobita_target *t, enum nobita_argtype a,
   switch (a) {
   case NOBITA_T_CFLAGS: {
     vector_append(t, cflags, arg);
+    Nobita_Free_Later(t->b, arg);
     break;
   }
   case NOBITA_T_LDFLAGS: {
     vector_append(t, ldflags, arg);
+    Nobita_Free_Later(t->b, arg);
     break;
   }
   case NOBITA_T_CUSTOM_CMD: {
@@ -550,8 +580,6 @@ void Nobita_Target_Add_Fmt_Arg(struct nobita_target *t, enum nobita_argtype a,
   default:
     break;
   }
-
-  Nobita_Free_Later(t->b, arg);
 }
 
 void Nobita_Try_Rebuild(Nobita_Build *b, const char *build_file) {
@@ -1112,6 +1140,9 @@ int main(int argc, char **argv) {
       free(t->sources[ii]);
       free(t->objects[ii]);
     }
+
+    for (size_t ii = 0; ii < t->custom_cmd_used; ii++)
+      free(t->custom_cmd[ii]);
 
     vector_free(t, cflags);
     vector_free(t, sources);

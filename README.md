@@ -31,5 +31,5 @@ try
 -   [x] Allow multiple commands to occur at once
 -   [x] Add convenience functions
 -   [x] Clean up the build_target function
--   [ ] File globbing for add_sources, & custom commands
+-   [x] File globbing for add_sources, & custom commands
 -   [ ] Be crossplatform
