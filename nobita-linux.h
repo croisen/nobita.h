@@ -78,8 +78,6 @@ void Nobita_Target_Add_Headers(struct nobita_target *t, const char *parent,
 #define NOBITA_LINUX_IMPL
 #ifdef NOBITA_LINUX_IMPL
 
-#include <assert.h>
-#include <errno.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -88,6 +86,7 @@ void Nobita_Target_Add_Headers(struct nobita_target *t, const char *parent,
 
 #ifndef _WIN32
 
+#include <errno.h>
 #include <glob.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -99,6 +98,20 @@ typedef pid_t nobita_pid;
 #define NOBITA_EXECUT_EXT ".elf"
 #define NOBITA_SHARED_EXT ".so"
 #define NOBITA_STATIC_EXT ".a"
+
+#else
+
+#include <math.h>
+#include <stdint.h>
+
+#define WIN32_LEAN_AND_MEAN
+#include <Windows.h>
+
+typedef HANDLE nobita_pid;
+#define NOBITA_PATHSEP "\\"
+#define NOBITA_EXECUT_EXT ".exe"
+#define NOBITA_SHARED_EXT ".dll"
+#define NOBITA_STATIC_EXT ".lib"
 
 #endif /* _WIN32 */
 
@@ -176,6 +189,10 @@ struct nobita_build {
   size_t proc_queue_size;
   nobita_pid *proc_queue;
 
+  size_t proc_names_used;
+  size_t proc_names_size;
+  char **proc_names;
+
   int argc;
   char **argv;
   bool was_self_rebuilt;
@@ -191,7 +208,7 @@ struct nobita_build {
 static struct nobita_target *nobita_build_add_target(struct nobita_build *b,
                                                      const char *name);
 
-static nobita_pid nobita_proc_exec(char **cmd);
+static nobita_pid nobita_proc_exec(char **cmd, char *joined_cmd);
 static int nobita_proc_wait(nobita_pid pid, bool pause);
 
 static void nobita_proc_append(struct nobita_build *b, char **cmd);
@@ -205,7 +222,8 @@ static bool nobita_dir_exist(char *path);
 
 static void nobita_build_target(struct nobita_target *t);
 static void nobita_cp(const char *dest, const char *src);
-static char *nobita_strjoin(const char *join, ...);
+static char *nobita_strjoinl(const char *join, ...);
+static char *nobita_strjoinv(const char *join, char **v);
 static char *nobita_getcwd(void);
 static char *nobita_getced(const char *arv0);
 static char *nobita_strdup(const char *);
@@ -436,6 +454,7 @@ void Nobita_Target_Add_Sources(struct nobita_target *t, ...) {
 
   char *arg = va_arg(va, char *);
   while (arg != NULL) {
+#ifndef _WIN32
     glob_t g;
     if (glob(arg, 0, NULL, &g) != 0) {
       fprintf(stderr, "Glob error for pattern %s in add source to target %s\n",
@@ -446,35 +465,63 @@ void Nobita_Target_Add_Sources(struct nobita_target *t, ...) {
     }
 
     for (size_t ii = 0; ii < g.gl_pathc; ii++) {
-      char *o = nobita_strjoin(NOBITA_PATHSEP, t->b->ced, "nobita-cache",
-                               g.gl_pathv[ii], NULL);
+      char *s =
+          nobita_strjoinl(NOBITA_PATHSEP, t->b->ced, g.gl_pathv[ii], NULL);
+      char *o = nobita_strjoinl(NOBITA_PATHSEP, t->b->ced, "nobita-cache",
+                                g.gl_pathv[ii], NULL);
       char *i = strrchr(o, '.');
       i[1] = 'o';
       i[2] = 0;
 
-      char *o2 = nobita_strdup(o);
-      if (o2 == NULL) {
-        fprintf(
-            stderr,
-            "Could not get object counterpart of source: %s for target %s\n",
-            arg, t->name);
-        nobita_build_failed = true;
-        va_end(va);
-        return;
-      }
-
-      nobita_dirname(o2);
-      nobita_mkdir_recursive(o2);
-
-      vector_append(
-          t, sources,
-          nobita_strjoin(NOBITA_PATHSEP, t->b->ced, g.gl_pathv[ii], NULL));
+      vector_append(t, sources, s);
       vector_append(t, objects, o);
-
-      free(o2);
+      nobita_dirname(o);
+      nobita_mkdir_recursive(o);
+      *strchr(o, 0) = *NOBITA_PATHSEP;
     }
 
     globfree(&g);
+
+#else
+    WIN32_FIND_DATAA d = {0};
+    HANDLE f = FindFirstFileA(arg, &d);
+    if (f == INVALID_HANDLE_VALUE) {
+      fprintf(stderr, "The glob pattern %s for custom command %s is invalid!\n",
+              arg, t->name);
+      nobita_build_failed = true;
+      va_end(va);
+      return;
+    }
+
+    vector_append(
+        t, sources,
+        nobita_strjoinl(NOBITA_PATHSEP, t->b->ced, d.cFileName, NULL));
+    char *i = strrchr(d.cFileName, '.');
+    i[1] = 'o';
+    i[2] = 0;
+    vector_append(t, objects,
+                  nobita_strjoinl(NOBITA_PATHSEP, t->b->ced, "nobita-cache",
+                                  d.cFileName, NULL));
+    nobita_dirname(d.cFileName);
+    nobita_mkdir_recursive(d.cFileName);
+    while (FindNextFileA(f, &d)) {
+      char *s = nobita_strjoinl(NOBITA_PATHSEP, t->b->ced, d.cFileName, NULL);
+      char *o = nobita_strjoinl(NOBITA_PATHSEP, t->b->ced, "nobita-cache",
+                                d.cFileName, NULL);
+      char *i = strrchr(o, '.');
+      i[1] = 'o';
+      i[2] = 0;
+
+      vector_append(t, sources, s);
+      vector_append(t, objects, o);
+      nobita_dirname(o);
+      nobita_mkdir_recursive(o);
+      *strchr(o, 0) = *NOBITA_PATHSEP;
+    }
+
+    CloseHandle(f);
+#endif /* _WIN32 */
+
     arg = va_arg(va, char *);
   }
 
@@ -521,6 +568,7 @@ void Nobita_CMD_Add_Args(Nobita_CMD *c, ...) {
   va_start(va, c);
 
   char *arg = va_arg(va, char *);
+#ifndef _WIN32
   while (arg != NULL) {
     glob_t g;
     if (glob(arg, GLOB_NOCHECK, NULL, &g) != 0) {
@@ -537,6 +585,25 @@ void Nobita_CMD_Add_Args(Nobita_CMD *c, ...) {
     free(g.gl_pathv);
     arg = va_arg(va, char *);
   }
+#else
+  while (arg != NULL) {
+    WIN32_FIND_DATAA d = {0};
+    HANDLE f = FindFirstFileA(arg, &d);
+    if (f == INVALID_HANDLE_VALUE) {
+      vector_append(c, custom_cmd, nobita_strdup(arg));
+      arg = va_arg(va, char *);
+      continue;
+    } else {
+      vector_append(c, custom_cmd, nobita_strdup(d.cFileName));
+    }
+
+    while (FindNextFileA(f, &d))
+      vector_append(c, custom_cmd, nobita_strdup(d.cFileName));
+
+    CloseHandle(f);
+    arg = va_arg(va, char *);
+  }
+#endif /* _WIN32 */
 
   va_end(va);
 }
@@ -548,7 +615,7 @@ void Nobita_Target_Add_Fmt_Arg(struct nobita_target *t, enum nobita_argtype a,
 
   va_list va;
   va_start(va, fmt);
-  ssize_t arglen = vsnprintf(NULL, 0, fmt, va) + 1;
+  int64_t arglen = vsnprintf(NULL, 0, fmt, va) + 1;
   va_end(va);
 
   char *arg = malloc(arglen * sizeof(char));
@@ -611,15 +678,16 @@ void Nobita_Try_Rebuild(Nobita_Build *b, const char *build_file) {
   vector_append(&e, full_cmd, (char *)build_file);
   vector_append(&e, full_cmd, NULL);
 
-  nobita_pid id = nobita_proc_exec(e.full_cmd);
-  nobita_proc_wait(id, true);
+  nobita_proc_append(b, e.full_cmd);
+  nobita_proc_wait_all(b);
   e.full_cmd_used = 0;
   for (int i = 0; i < b->argc; i++)
     vector_append(&e, full_cmd, b->argv[i]);
 
   vector_append(&e, full_cmd, NULL);
-  id = nobita_proc_exec(e.full_cmd);
-  nobita_proc_wait(id, true);
+
+  nobita_proc_append(b, e.full_cmd);
+  nobita_proc_wait_all(b);
   vector_free(&e, full_cmd);
   b->was_self_rebuilt = true;
 }
@@ -687,15 +755,15 @@ static struct nobita_target *nobita_build_add_target(struct nobita_build *b,
   return t;
 }
 
-static nobita_pid nobita_proc_exec(char **cmd) {
-  nobita_pid id = -1;
-
+static nobita_pid nobita_proc_exec(char **cmd, char *joined_cmd) {
+  nobita_pid id = (nobita_pid)-1;
   if (nobita_build_failed)
     return id;
 
+#ifndef _WIN32
   id = fork();
   if (id == -1) {
-    fprintf(stderr, "Fork failed\n");
+    fprintf(stderr, "Creating the process\n'%s'\nFailed!\n", joined_cmd);
     nobita_build_failed = true;
     return id;
   }
@@ -706,11 +774,27 @@ static nobita_pid nobita_proc_exec(char **cmd) {
   } else {
     return id;
   }
+#else
+  STARTUPINFO s = {0};
+  PROCESS_INFORMATION p = {0};
+  s.cb = sizeof(s);
+
+  if (!CreateProcessA(NULL, joined_cmd, NULL, NULL, false, 0, NULL, NULL, &s,
+                      &p)) {
+    fprintf(stderr, "Creating the process\n'%s'\nFailed!\n", joined_cmd);
+    return id;
+  } else
+    return p.hProcess;
+#endif /* _WIN32 */
 }
 
 static int nobita_proc_wait(nobita_pid pid, bool pause) {
   int status = -1;
+#ifndef _WIN32
   waitpid(pid, &status, (pause) ? 0 : WNOHANG);
+#else
+  status = WaitForSingleObject(pid, (pause) ? INFINITY : 0);
+#endif /* _WIN32 */
   return status;
 }
 
@@ -724,19 +808,15 @@ static void nobita_proc_append(struct nobita_build *b, char **cmd) {
   if (nobita_build_failed)
     return;
 
-  char **c = cmd;
-  while (true) {
-    printf("%s", *c);
-    c += 1;
-    if (*c != NULL)
-      printf(" ");
-    else
-      break;
-  }
+  char *c = nobita_strjoinv(" ", cmd);
+  if (c != NULL)
+    printf("%s\n", c);
+  else
+    nobita_build_failed = true;
 
-  printf("\n");
-  nobita_pid pid = nobita_proc_exec(cmd);
+  nobita_pid pid = nobita_proc_exec(cmd, c);
   vector_append(b, proc_queue, pid);
+  vector_append(b, proc_names, c);
 }
 
 static void nobita_proc_wait_one(struct nobita_build *b) {
@@ -744,20 +824,30 @@ static void nobita_proc_wait_one(struct nobita_build *b) {
   while (continue_loop) {
     for (size_t i = 0; i < b->proc_queue_used; i++) {
       int status = nobita_proc_wait(b->proc_queue[i], false);
+#ifndef _WIN32
       if (status != -1 && WIFEXITED(status)) {
-        nobita_pid p = b->proc_queue[i];
+#else
+      if (status != -1 && status == WAIT_OBJECT_0) {
+        CloseHandle(b->proc_queue[i]);
+#endif /* _WIN32 */
         b->proc_queue[i] = b->proc_queue[b->proc_queue_used - 1];
-        b->proc_queue[b->proc_queue_used - 1] = p;
         b->proc_queue_used -= 1;
 
-        status = nobita_proc_wait(p, true);
+#ifndef _WIN32
         if (WEXITSTATUS(status) != EXIT_SUCCESS) {
+#else
+        if (status == WAIT_FAILED) {
+#endif /* _WIN32 */
           nobita_build_failed = true;
           fprintf(
               stderr,
               "A process did not exit sucessfully, marking build as failed\n");
+          fprintf(stderr, "Cmd: %s\n", b->proc_names[i]);
         }
 
+        free(b->proc_names[i]);
+        b->proc_names[i] = b->proc_names[b->proc_names_used - 1];
+        b->proc_names_used -= 1;
         continue_loop = false;
         break;
       }
@@ -768,18 +858,33 @@ static void nobita_proc_wait_one(struct nobita_build *b) {
 static void nobita_proc_wait_all(struct nobita_build *b) {
   for (size_t i = 0; i < b->proc_queue_used; i++) {
     int status = nobita_proc_wait(b->proc_queue[i], true);
+#ifndef _WIN32
     if (!WIFEXITED(status) && !nobita_build_failed) {
       nobita_build_failed = true;
-      fprintf(stderr, "A process did not exit successfully\n");
+      fprintf(stderr, "A process did not exit\n");
+      fprintf(stderr, "Cmd: %s\n", b->proc_names[i]);
     }
 
     if (WEXITSTATUS(status) != EXIT_SUCCESS && !nobita_build_failed) {
       nobita_build_failed = true;
       fprintf(stderr, "A process did not exit successfully\n");
+      fprintf(stderr, "Cmd: %s\n", b->proc_names[i]);
     }
+#else
+    if (status != 0 && !nobita_build_failed) {
+      nobita_build_failed = true;
+      fprintf(stderr, "A process did not exit successfully\n");
+      fprintf(stderr, "Cmd: %s\n", b->proc_names[i]);
+    }
+
+    CloseHandle(b->proc_queue[i]);
+#endif /* _WIN32 */
+
+    free(b->proc_names[i]);
   }
 
   b->proc_queue_used = 0;
+  b->proc_names_used = 0;
 }
 
 static void nobita_mkdir_recursive(const char *path) {
@@ -816,29 +921,55 @@ static void nobita_mkdir_recursive(const char *path) {
 }
 
 static bool nobita_is_a_newer(char *a, char *b) {
+#ifndef _WIN32
   struct stat s_a, s_b;
   memset(&s_a, 0, sizeof(s_a));
   memset(&s_b, 0, sizeof(s_b));
   stat(a, &s_a);
   stat(b, &s_b);
-
   return (s_a.st_mtime > s_b.st_mtime);
+#else
+  WIN32_FILE_ATTRIBUTE_DATA s_a, s_b;
+  memset(&s_a, 0, sizeof(s_a));
+  memset(&s_b, 0, sizeof(s_b));
+  GetFileAttributesExA(a, GetFileExInfoStandard, &s_a);
+  GetFileAttributesExA(b, GetFileExInfoStandard, &s_b);
+  return CompareFileTime(&s_a.ftLastWriteTime, &s_b.ftLastWriteTime) == 1;
+#endif /* _WIN32 */
 }
 
 static bool nobita_file_exist(char *path) {
+#ifndef _WIN32
   struct stat buf;
   if (stat(path, &buf) == -1)
     return false;
 
   return !S_ISDIR(buf.st_mode);
+#else
+  WIN32_FILE_ATTRIBUTE_DATA s;
+  memset(&s, 0, sizeof(s));
+  if (GetFileAttributesExA(path, GetFileExInfoStandard, &s) == 0)
+    return false;
+
+  return !(s.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY);
+#endif /* _WIN32 */
 }
 
 static bool nobita_dir_exist(char *path) {
+#ifndef _WIN32
   struct stat buf;
   if (stat(path, &buf) == -1)
     return false;
 
   return S_ISDIR(buf.st_mode);
+#else
+  WIN32_FILE_ATTRIBUTE_DATA s;
+  memset(&s, 0, sizeof(s));
+  if (GetFileAttributesExA(path, GetFileExInfoStandard, &s) == 0)
+    return false;
+
+  return (s.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY);
+#endif /* _WIN32 */
 }
 
 static void nobita_build_target(struct nobita_target *t) {
@@ -877,18 +1008,18 @@ static void nobita_build_target(struct nobita_target *t) {
 
   switch (t->target_type) {
   case NOBITA_EXECUTABLE: {
-    name = nobita_strjoin("", t->name, NOBITA_EXECUT_EXT, NULL);
-    output = nobita_strjoin(NOBITA_PATHSEP, t->b->bin, name, NULL);
+    name = nobita_strjoinl("", t->name, NOBITA_EXECUT_EXT, NULL);
+    output = nobita_strjoinl(NOBITA_PATHSEP, t->b->bin, name, NULL);
     break;
   }
   case NOBITA_SHARED_LIB: {
-    name = nobita_strjoin("", "lib", t->name, NOBITA_SHARED_EXT, NULL);
-    output = nobita_strjoin(NOBITA_PATHSEP, t->b->lib, name, NULL);
+    name = nobita_strjoinl("", "lib", t->name, NOBITA_SHARED_EXT, NULL);
+    output = nobita_strjoinl(NOBITA_PATHSEP, t->b->lib, name, NULL);
     break;
   }
   case NOBITA_STATIC_LIB: {
-    name = nobita_strjoin("", "lib", t->name, NOBITA_STATIC_EXT, NULL);
-    output = nobita_strjoin(NOBITA_PATHSEP, t->b->lib, name, NULL);
+    name = nobita_strjoinl("", "lib", t->name, NOBITA_STATIC_EXT, NULL);
+    output = nobita_strjoinl(NOBITA_PATHSEP, t->b->lib, name, NULL);
     break;
   }
   case NOBITA_CUSTOM_CMD: {
@@ -945,12 +1076,12 @@ static void nobita_build_target(struct nobita_target *t) {
       char *parent = t->headers[i].parent;
       char *header = t->headers[i].header;
       char *header_cp =
-          nobita_strjoin(NOBITA_PATHSEP, t->b->include, header, NULL);
+          nobita_strjoinl(NOBITA_PATHSEP, t->b->include, header, NULL);
       nobita_dirname(header_cp);
       nobita_mkdir_recursive(header_cp);
 
-      char *src = nobita_strjoin(NOBITA_PATHSEP, parent, header, NULL);
-      char *dest = nobita_strjoin(NOBITA_PATHSEP, t->b->include, header, NULL);
+      char *src = nobita_strjoinl(NOBITA_PATHSEP, parent, header, NULL);
+      char *dest = nobita_strjoinl(NOBITA_PATHSEP, t->b->include, header, NULL);
       nobita_cp(dest, src);
 
       free(header_cp);
@@ -1010,7 +1141,7 @@ end:
   fclose(s);
 }
 
-static char *nobita_strjoin(const char *join, ...) {
+static char *nobita_strjoinl(const char *join, ...) {
   if (nobita_build_failed)
     return NULL;
 
@@ -1032,7 +1163,7 @@ static char *nobita_strjoin(const char *join, ...) {
   ret = malloc(len * sizeof(char));
   if (ret == NULL) {
     fprintf(stderr,
-            "Could not join strings using strjoin as malloc returned NULL\n");
+            "Could not join strings using strjoinl as malloc returned NULL\n");
     nobita_build_failed = true;
     return ret;
   }
@@ -1051,12 +1182,52 @@ static char *nobita_strjoin(const char *join, ...) {
   return ret;
 }
 
+static char *nobita_strjoinv(const char *join, char **v) {
+  char *ret = NULL;
+  char **v2 = v;
+  size_t len = 1;
+  while (*v != NULL) {
+    len += strlen(*v);
+    v++;
+    if (*v != NULL)
+      len += strlen(join);
+  }
+
+  ret = malloc(len);
+  if (ret == NULL) {
+    fprintf(stderr,
+            "Could not join strings using strjoinv as malloc returned NULL\n");
+    nobita_build_failed = true;
+    return ret;
+  }
+
+  *ret = 0;
+  while (*v2 != NULL) {
+    strcat(ret, *v2);
+    v2++;
+    if (*v2 != NULL)
+      strcat(ret, join);
+  }
+
+  return ret;
+}
+
 static char *nobita_getcwd(void) {
+#ifndef _WIN32
   char *ret = getcwd(NULL, 0);
+#else
+  int len = GetCurrentDirectoryA(0, NULL);
+  char *ret = malloc(len);
+#endif /* _WIN32 */
   if (ret == NULL) {
     fprintf(stderr, "Couldn't get current working directory\n");
     nobita_build_failed = true;
   }
+#ifdef _WIN32
+  else {
+    GetCurrentDirectoryA(len, ret);
+  }
+#endif
 
   return ret;
 }
@@ -1103,10 +1274,10 @@ int main(int argc, char **argv) {
 
   char *ced = nobita_getced(argv[0]);
   char *cwd = nobita_getcwd();
-  char *prefix = nobita_strjoin(NOBITA_PATHSEP, cwd, "nobita-build", NULL);
-  char *include = nobita_strjoin(NOBITA_PATHSEP, prefix, "include", NULL);
-  char *bin = nobita_strjoin(NOBITA_PATHSEP, prefix, "bin", NULL);
-  char *lib = nobita_strjoin(NOBITA_PATHSEP, prefix, "lib", NULL);
+  char *prefix = nobita_strjoinl(NOBITA_PATHSEP, cwd, "nobita-build", NULL);
+  char *include = nobita_strjoinl(NOBITA_PATHSEP, prefix, "include", NULL);
+  char *bin = nobita_strjoinl(NOBITA_PATHSEP, prefix, "bin", NULL);
+  char *lib = nobita_strjoinl(NOBITA_PATHSEP, prefix, "lib", NULL);
 
   nobita_mkdir_recursive(prefix);
   nobita_mkdir_recursive(bin);
@@ -1116,6 +1287,7 @@ int main(int argc, char **argv) {
   vector_init(&b, deps);
   vector_init(&b, free_later);
   vector_init(&b, proc_queue);
+  vector_init(&b, proc_names);
 
   b.argc = argc;
   b.argv = argv;
@@ -1163,6 +1335,7 @@ int main(int argc, char **argv) {
   vector_free(&b, deps);
   vector_free(&b, free_later);
   vector_free(&b, proc_queue);
+  vector_free(&b, proc_names);
 
   free(ced);
   free(cwd);

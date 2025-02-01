@@ -1,8 +1,9 @@
 *.o
 *.a
 *.so
+*.obj
 
 /nobita-build/
 
 /build
-/hello
+/build.exe
