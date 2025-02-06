@@ -33,4 +33,4 @@ try
 -   [x] Clean up the build_target function
 -   [x] File globbing for add_sources, & custom commands
 -   [x] Be crossplatform
--   [ ] Change how the compiler options are given to nobita
+-   [x] Change how the compiler options are given to nobita
