@@ -375,6 +375,16 @@ void Nobita_Target_Set_Build_Tool(struct nobita_target *t,
     return;
 
   t->comp_opts.bt = bt;
+  if (bt != NOBITA_BT_MSVC) {
+    Nobita_Target_Add_Fmt_Arg(t, NOBITA_T_CFLAGS, "%s%s", "-I", t->b->include);
+    Nobita_Target_Add_Fmt_Arg(t, NOBITA_T_LDFLAGS, "%s%s", "-L", t->b->lib);
+  } else {
+    Nobita_Target_Add_Fmt_Arg(t, NOBITA_T_CFLAGS, "%s%s", "/I", t->b->include);
+    vector_append(t, ldflags, "/link");
+    Nobita_Target_Add_Fmt_Arg(t, NOBITA_T_LDFLAGS, "%s%s",
+                              "/LIBPATH:", t->b->lib);
+  }
+
   switch (bt) {
   case NOBITA_BT_GCC:
     t->comp_opts.cc = "gcc";
@@ -436,7 +446,7 @@ void Nobita_Target_Set_Build_Tool(struct nobita_target *t,
     t->comp_opts.to_lib = "/LD";
 
     t->comp_opts.inc_dir = "/I";
-    t->comp_opts.lib_dir = "/L";
+    t->comp_opts.lib_dir = "/LIBPATH:";
 
     t->comp_opts.ar = "lib.exe";
     t->comp_opts.ar_opts = "/OUT:";
@@ -1165,11 +1175,6 @@ static void nobita_build_target(struct nobita_target *t) {
   }
 
   nobita_proc_wait_all(t->b);
-
-  Nobita_Target_Add_Fmt_Arg(t, NOBITA_T_CFLAGS, "%s%s", t->comp_opts.inc_dir,
-                            t->b->include);
-  Nobita_Target_Add_Fmt_Arg(t, NOBITA_T_LDFLAGS, "%s%s", t->comp_opts.lib_dir,
-                            t->b->lib);
 
   if (t->target_type != NOBITA_EXECUTABLE) {
     for (size_t i = 0; i < t->headers_used; i++) {
