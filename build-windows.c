@@ -11,6 +11,7 @@ void build(Nobita_Build *b) {
   Nobita_Shared_Lib *a = Nobita_Build_Add_Shared_Lib(b, "a");
   Nobita_Target_Set_Build_Tool(a, NOBITA_BT_MSVC);
   Nobita_Target_Add_Sources(a, "test-src\\test-lib.c", NULL);
+  Nobita_Target_Add_Headers(a, "3rd_party", "openssl\\sha.h", NULL);
   Nobita_Target_Add_Deps(a, hello, NULL);
 
   Nobita_Static_Lib *bb = Nobita_Build_Add_Static_Lib(b, "b");

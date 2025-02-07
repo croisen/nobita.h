@@ -464,6 +464,22 @@ void Nobita_Target_Add_Sources(struct nobita_target *t, ...) {
   if (nobita_build_failed)
     return;
 
+  char *append_cache_dir = NULL;
+  switch (t->target_type) {
+  case NOBITA_EXECUTABLE:
+    append_cache_dir = "execut";
+    break;
+  case NOBITA_SHARED_LIB:
+    append_cache_dir = "shared";
+    break;
+  case NOBITA_STATIC_LIB:
+    append_cache_dir = "static";
+    break;
+  case NOBITA_CUSTOM_CMD:
+    append_cache_dir = "custom";
+    break;
+  }
+
   va_list va;
   va_start(va, t);
 
@@ -482,8 +498,9 @@ void Nobita_Target_Add_Sources(struct nobita_target *t, ...) {
     for (size_t ii = 0; ii < g.gl_pathc; ii++) {
       char *s =
           nobita_strjoinl(NOBITA_PATHSEP, t->b->ced, g.gl_pathv[ii], NULL);
-      char *o = nobita_strjoinl(NOBITA_PATHSEP, t->b->ced, "nobita-cache",
-                                g.gl_pathv[ii], NULL);
+      char *o =
+          nobita_strjoinl(NOBITA_PATHSEP, t->b->ced, "nobita-cache", t->name,
+                          append_cache_dir, g.gl_pathv[ii], NULL);
       char *i = strrchr(o, '.');
       i[1] = 'o';
       i[2] = 0;
@@ -510,31 +527,37 @@ void Nobita_Target_Add_Sources(struct nobita_target *t, ...) {
 
     char *argdir = nobita_strdup(arg);
     nobita_dirname(argdir);
-    vector_append(
-        t, sources,
-        nobita_strjoinl(NOBITA_PATHSEP, t->b->ced, argdir, d.cFileName, NULL));
+    char *s =
+        nobita_strjoinl(NOBITA_PATHSEP, t->b->ced, argdir, d.cFileName, NULL);
+    vector_append(t, sources, s);
+
     char *i = strrchr(d.cFileName, '.');
     i[1] = 'o';
     i[2] = 'b';
     i[3] = 'j';
     i[4] = 0;
-    vector_append(t, objects,
-                  nobita_strjoinl(NOBITA_PATHSEP, t->b->ced, "nobita-cache",
-                                  argdir, d.cFileName, NULL));
-    nobita_dirname(d.cFileName);
-    nobita_mkdir_recursive(d.cFileName);
+    char *o =
+        nobita_strjoinl(NOBITA_PATHSEP, t->b->ced, "nobita-cache", t->name,
+                        append_cache_dir, argdir, d.cFileName, NULL);
+    vector_append(t, objects, o);
+    nobita_dirname(o);
+    nobita_mkdir_recursive(o);
+    *strchr(o, 0) = *NOBITA_PATHSEP;
+
     while (FindNextFileA(f, &d)) {
       char *s =
           nobita_strjoinl(NOBITA_PATHSEP, t->b->ced, argdir, d.cFileName, NULL);
+      vector_append(t, sources, s);
+
       char *i = strrchr(d.cFileName, '.');
       i[1] = 'o';
       i[2] = 'b';
       i[3] = 'j';
       i[4] = 0;
-      char *o = nobita_strjoinl(NOBITA_PATHSEP, t->b->ced, "nobita-cache",
-                                argdir, d.cFileName, NULL);
+      char *o =
+          nobita_strjoinl(NOBITA_PATHSEP, t->b->ced, "nobita-cache", t->name,
+                          append_cache_dir, argdir, d.cFileName, NULL);
 
-      vector_append(t, sources, s);
       vector_append(t, objects, o);
       nobita_dirname(o);
       nobita_mkdir_recursive(o);

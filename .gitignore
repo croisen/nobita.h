@@ -4,6 +4,7 @@
 *.obj
 
 /nobita-build/
+/nobita-cache/
 
 /build
 /build.exe

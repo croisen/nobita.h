@@ -34,3 +34,6 @@ try
 -   [x] File globbing for add_sources, & custom commands
 -   [x] Be crossplatform
 -   [x] Change how the compiler options are given to nobita
+-   [x] Add a separate cache directory for each build target name and type
+        (To address the fact that static and shared libraries have different
+        compile options)
