@@ -871,6 +871,7 @@ static nobita_pid nobita_proc_exec(char **cmd, char *joined_cmd) {
   if (!CreateProcessA(NULL, joined_cmd, NULL, NULL, false, 0, NULL, NULL, &s,
                       &p)) {
     fprintf(stderr, "Creating the process\n'%s'\nFailed!\n", joined_cmd);
+    nobita_build_failed = true;
     return id;
   } else
     return p.hProcess;
@@ -904,12 +905,11 @@ static void nobita_proc_append(struct nobita_build *b, char **cmd) {
     nobita_build_failed = true;
 
   nobita_pid pid = nobita_proc_exec(cmd, c);
-  if (pid != -1) {
-    vector_append(b, proc_queue, pid);
-    vector_append(b, proc_names, c);
-  } else {
+  vector_append(b, proc_queue, pid);
+  vector_append(b, proc_names, c);
+
+  if (nobita_build_failed)
     free(c);
-  }
 }
 
 static void nobita_proc_wait_one(struct nobita_build *b) {
