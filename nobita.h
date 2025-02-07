@@ -20,8 +20,8 @@
  * OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#ifndef NOBITA_LINUX_H
-#define NOBITA_LINUX_H
+#ifndef NOBITA_H
+#define NOBITA_H
 
 typedef struct nobita_build Nobita_Build;
 typedef struct nobita_target Nobita_Exe;
@@ -65,7 +65,8 @@ void Nobita_Target_Add_Fmt_Arg(struct nobita_target *t, enum nobita_argtype a,
                                const char *fmt, ...)
     __attribute__((format(printf, 3, 4)));
 #else
-void Nobita_Target_Add_Fmt_Arg(struct nobita_target *t, const char *fmt, ...);
+void Nobita_Target_Add_Fmt_Arg(struct nobita_target *t, enum nobita_argtype a,
+                               const char *fmt, ...);
 #endif /* __GNUC__ */
 
 void Nobita_Target_Add_Cflags(struct nobita_target *t, ...);
@@ -75,10 +76,17 @@ void Nobita_Target_Add_Deps(struct nobita_target *t, ...);
 void Nobita_Target_Add_Headers(struct nobita_target *t, const char *parent,
                                ...);
 
-#endif /* NOBITA_LINUX_H */
+char *Nobita_GetCwd(Nobita_Build *b);
+char *Nobita_GetCed(Nobita_Build *b);
+char *Nobita_GetPrefix(Nobita_Build *b);
+char *Nobita_GetInclude(Nobita_Build *b);
+char *Nobita_GetBin(Nobita_Build *b);
+char *Nobita_GetLib(Nobita_Build *b);
 
-#define NOBITA_LINUX_IMPL
-#ifdef NOBITA_LINUX_IMPL
+#endif /* NOBITA_H */
+
+#define NOBITA_IMPL
+#ifdef NOBITA_IMPL
 
 #include <stdarg.h>
 #include <stdbool.h>
@@ -103,7 +111,6 @@ typedef pid_t nobita_pid;
 
 #else
 
-#include <math.h>
 #include <stdint.h>
 
 #define WIN32_LEAN_AND_MEAN
@@ -380,7 +387,7 @@ void Nobita_Target_Set_Build_Tool(struct nobita_target *t,
     t->comp_opts.lib_dir = "-L";
 
     t->comp_opts.ar = "ar";
-    t->comp_opts.ar = "rcs";
+    t->comp_opts.ar_opts = "rcs";
     break;
   case NOBITA_BT_GPP:
     t->comp_opts.cc = "g++";
@@ -393,7 +400,7 @@ void Nobita_Target_Set_Build_Tool(struct nobita_target *t,
     t->comp_opts.lib_dir = "-L";
 
     t->comp_opts.ar = "ar";
-    t->comp_opts.ar = "rcs";
+    t->comp_opts.ar_opts = "rcs";
     break;
   case NOBITA_BT_LLVM:
     t->comp_opts.cc = "clang";
@@ -406,7 +413,7 @@ void Nobita_Target_Set_Build_Tool(struct nobita_target *t,
     t->comp_opts.lib_dir = "-L";
 
     t->comp_opts.ar = "llvm-ar";
-    t->comp_opts.ar = "rcs";
+    t->comp_opts.ar_opts = "rcs";
     break;
   case NOBITA_BT_LLVMPP:
     t->comp_opts.cc = "clang++";
@@ -419,7 +426,7 @@ void Nobita_Target_Set_Build_Tool(struct nobita_target *t,
     t->comp_opts.lib_dir = "-L";
 
     t->comp_opts.ar = "llvm-ar";
-    t->comp_opts.ar = "rcs";
+    t->comp_opts.ar_opts = "rcs";
     break;
   case NOBITA_BT_MSVC:
     t->comp_opts.cc = "cl.exe";
@@ -432,7 +439,7 @@ void Nobita_Target_Set_Build_Tool(struct nobita_target *t,
     t->comp_opts.lib_dir = "/L";
 
     t->comp_opts.ar = "lib.exe";
-    t->comp_opts.ar = "/OUT:";
+    t->comp_opts.ar_opts = "/OUT:";
     break;
   }
 }
@@ -501,24 +508,31 @@ void Nobita_Target_Add_Sources(struct nobita_target *t, ...) {
       return;
     }
 
+    char *argdir = nobita_strdup(arg);
+    nobita_dirname(argdir);
     vector_append(
         t, sources,
-        nobita_strjoinl(NOBITA_PATHSEP, t->b->ced, d.cFileName, NULL));
+        nobita_strjoinl(NOBITA_PATHSEP, t->b->ced, argdir, d.cFileName, NULL));
     char *i = strrchr(d.cFileName, '.');
     i[1] = 'o';
-    i[2] = 0;
+    i[2] = 'b';
+    i[3] = 'j';
+    i[4] = 0;
     vector_append(t, objects,
                   nobita_strjoinl(NOBITA_PATHSEP, t->b->ced, "nobita-cache",
-                                  d.cFileName, NULL));
+                                  argdir, d.cFileName, NULL));
     nobita_dirname(d.cFileName);
     nobita_mkdir_recursive(d.cFileName);
     while (FindNextFileA(f, &d)) {
-      char *s = nobita_strjoinl(NOBITA_PATHSEP, t->b->ced, d.cFileName, NULL);
-      char *o = nobita_strjoinl(NOBITA_PATHSEP, t->b->ced, "nobita-cache",
-                                d.cFileName, NULL);
-      char *i = strrchr(o, '.');
+      char *s =
+          nobita_strjoinl(NOBITA_PATHSEP, t->b->ced, argdir, d.cFileName, NULL);
+      char *i = strrchr(d.cFileName, '.');
       i[1] = 'o';
-      i[2] = 0;
+      i[2] = 'b';
+      i[3] = 'j';
+      i[4] = 0;
+      char *o = nobita_strjoinl(NOBITA_PATHSEP, t->b->ced, "nobita-cache",
+                                argdir, d.cFileName, NULL);
 
       vector_append(t, sources, s);
       vector_append(t, objects, o);
@@ -527,6 +541,7 @@ void Nobita_Target_Add_Sources(struct nobita_target *t, ...) {
       *strchr(o, 0) = *NOBITA_PATHSEP;
     }
 
+    free(argdir);
     CloseHandle(f);
 #endif /* _WIN32 */
 
@@ -602,12 +617,20 @@ void Nobita_CMD_Add_Args(Nobita_CMD *c, ...) {
       arg = va_arg(va, char *);
       continue;
     } else {
-      vector_append(c, custom_cmd, nobita_strdup(d.cFileName));
+      char *argdir = nobita_strdup(arg);
+      nobita_dirname(argdir);
+      vector_append(c, custom_cmd,
+                    nobita_strjoinl(NOBITA_PATHSEP, argdir, d.cFileName, NULL));
+      free(argdir);
     }
 
+    char *argdir = nobita_strdup(arg);
+    nobita_dirname(argdir);
     while (FindNextFileA(f, &d))
-      vector_append(c, custom_cmd, nobita_strdup(d.cFileName));
+      vector_append(c, custom_cmd,
+                    nobita_strjoinl(NOBITA_PATHSEP, argdir, d.cFileName, NULL));
 
+    free(argdir);
     CloseHandle(f);
     arg = va_arg(va, char *);
   }
@@ -658,6 +681,11 @@ void Nobita_Target_Add_Fmt_Arg(struct nobita_target *t, enum nobita_argtype a,
 }
 
 void Nobita_Try_Rebuild(Nobita_Build *b, const char *build_file) {
+#ifdef _WIN32
+  printf("Self-rebuilds are not supported on windows...\n");
+  return;
+#endif
+
   char *build_exe = *b->argv;
   char *nobita = __FILE__;
 
@@ -676,6 +704,20 @@ void Nobita_Try_Rebuild(Nobita_Build *b, const char *build_file) {
 #endif
 
   vector_append(&e, full_cmd, e.comp_opts.cc);
+#if defined(__clang__) || defined(__GNUC__)
+  vector_append(&e, full_cmd, "-Wall");
+  vector_append(&e, full_cmd, "-Wpedantic");
+  vector_append(&e, full_cmd, "-Wextra");
+  vector_append(&e, full_cmd, "-O3");
+  vector_append(&e, full_cmd, "-g");
+  vector_append(&e, full_cmd, "-fsanitize=address");
+#else
+  vector_append(&e, full_cmd, "/Wall");
+  vector_append(&e, full_cmd, "/O2");
+  vector_append(&e, full_cmd, "/Zi");
+  vector_append(&e, full_cmd, "/fsanitize=address");
+#endif
+
   vector_append(&e, full_cmd, e.comp_opts.to_exe);
   vector_append(&e, full_cmd, build_exe);
   vector_append(&e, full_cmd, (char *)build_file);
@@ -722,6 +764,18 @@ void Nobita_Target_Add_Headers(struct nobita_target *t, const char *parent,
 
   va_end(va);
 }
+
+char *Nobita_GetCwd(Nobita_Build *b) { return b->cwd; }
+
+char *Nobita_GetCed(Nobita_Build *b) { return b->ced; }
+
+char *Nobita_GetPrefix(Nobita_Build *b) { return b->prefix; }
+
+char *Nobita_GetInclude(Nobita_Build *b) { return b->include; }
+
+char *Nobita_GetBin(Nobita_Build *b) { return b->bin; }
+
+char *Nobita_GetLib(Nobita_Build *b) { return b->lib; }
 
 static struct nobita_target *nobita_build_add_target(struct nobita_build *b,
                                                      const char *name) {
@@ -795,7 +849,7 @@ static int nobita_proc_wait(nobita_pid pid, bool pause) {
 #ifndef _WIN32
   waitpid(pid, &status, (pause) ? 0 : WNOHANG);
 #else
-  status = WaitForSingleObject(pid, (pause) ? INFINITY : 0);
+  status = WaitForSingleObject(pid, (pause) ? INFINITE : 0);
 #endif /* _WIN32 */
   return status;
 }
@@ -817,8 +871,12 @@ static void nobita_proc_append(struct nobita_build *b, char **cmd) {
     nobita_build_failed = true;
 
   nobita_pid pid = nobita_proc_exec(cmd, c);
-  vector_append(b, proc_queue, pid);
-  vector_append(b, proc_names, c);
+  if (pid != -1) {
+    vector_append(b, proc_queue, pid);
+    vector_append(b, proc_names, c);
+  } else {
+    free(c);
+  }
 }
 
 static void nobita_proc_wait_one(struct nobita_build *b) {
@@ -829,7 +887,7 @@ static void nobita_proc_wait_one(struct nobita_build *b) {
 #ifndef _WIN32
       if (status != -1 && WIFEXITED(status)) {
 #else
-      if (status != -1 && status == WAIT_OBJECT_0) {
+      if (status != WAIT_FAILED && status == WAIT_OBJECT_0) {
         CloseHandle(b->proc_queue[i]);
 #endif /* _WIN32 */
         b->proc_queue[i] = b->proc_queue[b->proc_queue_used - 1];
@@ -873,7 +931,13 @@ static void nobita_proc_wait_all(struct nobita_build *b) {
       fprintf(stderr, "Cmd: %s\n", b->proc_names[i]);
     }
 #else
-    if (status != 0 && !nobita_build_failed) {
+    if (status == WAIT_FAILED && !nobita_build_failed) {
+      nobita_build_failed = true;
+      fprintf(stderr, "A process did not exit\n");
+      fprintf(stderr, "Cmd: %s\n", b->proc_names[i]);
+    }
+
+    if (status != WAIT_OBJECT_0 && !nobita_build_failed) {
       nobita_build_failed = true;
       fprintf(stderr, "A process did not exit successfully\n");
       fprintf(stderr, "Cmd: %s\n", b->proc_names[i]);
@@ -976,38 +1040,35 @@ static bool nobita_dir_exist(char *path) {
 
 static bool nobita_build_objects(struct nobita_target *t) {
   bool rebuild = false;
-  if (t->target_type != NOBITA_CUSTOM_CMD)
-    for (size_t i = 0; i < t->objects_used; i++) {
-      if (!nobita_is_a_newer(t->objects[i], t->sources[i]) || rebuild) {
-        vector_append(t, full_cmd, t->comp_opts.cc);
-        vector_append_vector(t, full_cmd, t, cflags);
-        switch (t->comp_opts.bt) {
-        case NOBITA_BT_GCC:
-        case NOBITA_BT_GPP:
-        case NOBITA_BT_LLVM:
-        case NOBITA_BT_LLVMPP:
-          vector_append(t, full_cmd, t->comp_opts.to_exe);
-          vector_append(t, full_cmd, t->objects[i]);
-          vector_append(t, full_cmd, t->comp_opts.to_obj);
-          vector_append(t, full_cmd, t->sources[i]);
-          vector_append(t, full_cmd, NULL);
-          break;
-        case NOBITA_BT_MSVC:
-          vector_append(t, full_cmd, t->comp_opts.rename_obj);
-          vector_append(t, full_cmd, t->objects[i]);
-          vector_append(t, full_cmd, t->comp_opts.to_obj);
-          vector_append(t, full_cmd, t->sources[i]);
-          vector_append(t, full_cmd, NULL);
-          break;
-        }
+  for (size_t i = 0; i < t->objects_used; i++) {
+    if (!nobita_is_a_newer(t->objects[i], t->sources[i]) || rebuild) {
+      vector_append(t, full_cmd, t->comp_opts.cc);
+      vector_append_vector(t, full_cmd, t, cflags);
 
-        if (t->sources_used > 0)
-          nobita_proc_append(t->b, t->full_cmd);
-
-        t->full_cmd_used = 0;
-        rebuild = true;
+      switch (t->comp_opts.bt) {
+      case NOBITA_BT_GCC:
+      case NOBITA_BT_GPP:
+      case NOBITA_BT_LLVM:
+      case NOBITA_BT_LLVMPP:
+        vector_append(t, full_cmd, t->comp_opts.to_exe);
+        break;
+      case NOBITA_BT_MSVC:
+        vector_append(t, full_cmd, t->comp_opts.rename_obj);
+        break;
       }
+
+      vector_append(t, full_cmd, t->objects[i]);
+      vector_append(t, full_cmd, t->comp_opts.to_obj);
+      vector_append(t, full_cmd, t->sources[i]);
+      vector_append(t, full_cmd, NULL);
+
+      if (t->sources_used > 0)
+        nobita_proc_append(t->b, t->full_cmd);
+
+      t->full_cmd_used = 0;
+      rebuild = true;
     }
+  }
 
   nobita_proc_wait_all(t->b);
   return rebuild;
@@ -1081,6 +1142,12 @@ static void nobita_build_target(struct nobita_target *t) {
   }
 
   nobita_proc_wait_all(t->b);
+
+  Nobita_Target_Add_Fmt_Arg(t, NOBITA_T_CFLAGS, "%s%s", t->comp_opts.inc_dir,
+                            t->b->include);
+  Nobita_Target_Add_Fmt_Arg(t, NOBITA_T_LDFLAGS, "%s%s", t->comp_opts.lib_dir,
+                            t->b->lib);
+
   if (t->target_type != NOBITA_EXECUTABLE) {
     for (size_t i = 0; i < t->headers_used; i++) {
       char *parent = t->headers[i].parent;
@@ -1409,4 +1476,4 @@ int main(int argc, char **argv) {
   free(lib);
 }
 
-#endif /* NOBITA_LINUX_IMPL */
+#endif /* NOBITA_IMPL */
