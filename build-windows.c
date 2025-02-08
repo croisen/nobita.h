@@ -19,7 +19,7 @@ void build(Nobita_Build *b) {
   Nobita_Target_Add_Sources(bb, "test-src\\test-lib.c", NULL);
   Nobita_Target_Add_Deps(bb, hello, NULL);
 
-  Nobita_CMD *test3 = Nobita_Add_CMD(b, "test");
+  Nobita_CMD *test3 = Nobita_Build_Add_CMD(b, "test");
   Nobita_CMD_Add_Args(test3, "echo", "test-src\\*.c", NULL);
   Nobita_Target_Add_Fmt_Arg(test3, NOBITA_T_CUSTOM_CMD, "%s",
                             "Hello, Croisen!");
