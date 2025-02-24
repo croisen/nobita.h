@@ -262,7 +262,9 @@ static size_t nobita_max_proc_count = 4;
     (ptr)->name##_used = 0;                                                    \
     (ptr)->name = calloc(8, sizeof(*(ptr)->name));                             \
     if ((ptr)->name == NULL) {                                                 \
-      fprintf(stderr, "Failed to initialize vector named %s\n", #name);        \
+      fprintf(stderr,                                                          \
+              "\tNOBITA\tERROR: Failed to initialize vector named %s\n",       \
+              #name);                                                          \
       nobita_build_failed = true;                                              \
     }                                                                          \
   } while (false)
@@ -285,14 +287,14 @@ static size_t nobita_max_proc_count = 4;
       if (data == NULL) {                                                      \
         nobita_build_failed = true;                                            \
         fprintf(stderr,                                                        \
-                "Failed to append data to vector named %s in struct %s\n",     \
+                "\tNOBITA\tERROR: Failed to append data to vector named %s "   \
+                "in struct %s\n",                                              \
                 #name, #ptr);                                                  \
                                                                                \
         break;                                                                 \
       }                                                                        \
                                                                                \
       memcpy(data, (ptr)->name, (ptr)->name##_used * sizeof(*(ptr)->name));    \
-                                                                               \
       free((ptr)->name);                                                       \
       (ptr)->name = data;                                                      \
       (ptr)->name##_size *= 2;                                                 \
@@ -530,7 +532,9 @@ void Nobita_Target_Add_Sources(struct nobita_target *t, ...) {
     if (glob(arg, 0, NULL, &g) != 0) {
       nobita_build_failed = true;
       va_end(va);
-      fprintf(stderr, "Glob error for pattern %s in add source to target %s\n",
+      fprintf(stderr,
+              "\tNOBITA\tERROR: Glob error for pattern %s in add source to "
+              "target %s\n",
               arg, t->name);
 
       return;
@@ -561,7 +565,9 @@ void Nobita_Target_Add_Sources(struct nobita_target *t, ...) {
     if (f == INVALID_HANDLE_VALUE) {
       nobita_build_failed = true;
       va_end(va);
-      fprintf(stderr, "The glob pattern %s for custom command %s is invalid!\n",
+      fprintf(stderr,
+              "\tNOBITA\tERROR: The glob pattern %s for custom command %s is "
+              "invalid!\n",
               arg, t->name);
 
       return;
@@ -662,7 +668,9 @@ void Nobita_CMD_Add_Args(Nobita_CMD *c, ...) {
     if (glob(arg, GLOB_NOCHECK, NULL, &g) != 0) {
       nobita_build_failed = true;
       va_end(va);
-      fprintf(stderr, "The glob pattern %s for custom command %s is invalid!\n",
+      fprintf(stderr,
+              "\tNOBITA\tERROR: The glob pattern %s for custom command %s is "
+              "invalid!\n",
               arg, c->name);
 
       return;
@@ -718,7 +726,9 @@ void Nobita_Target_Add_Fmt_Arg(struct nobita_target *t, enum nobita_argtype a,
   char *arg = malloc(arglen * sizeof(char));
   if (arg == NULL) {
     nobita_build_failed = true;
-    fprintf(stderr, "Failed to add formatted arg to target %s\n", t->name);
+    fprintf(stderr,
+            "\tNOBITA\tERROR: Failed to add formatted arg to target %s\n",
+            t->name);
     return;
   }
 
@@ -815,7 +825,7 @@ void Nobita_Target_Add_Headers(struct nobita_target *t, const char *parent,
   if (parent == NULL) {
     nobita_build_failed = true;
     fprintf(stderr,
-            "When adding header files to a target, the parent "
+            "\tNOBITA\tERROR: When adding header files to a target, the parent "
             "dir should not be NULL (target: %s)\n",
             t->name);
 
@@ -856,14 +866,14 @@ static struct nobita_target *nobita_build_add_target(struct nobita_build *b,
 
   if (name == NULL) {
     nobita_build_failed = true;
-    fprintf(stderr, "A target's name should not be NULL\n");
+    fprintf(stderr, "\tNOBITA\tERROR: A target's name should not be NULL\n");
     return NULL;
   }
 
   struct nobita_target *t = calloc(1, sizeof(*t));
   if (t == NULL) {
     nobita_build_failed = true;
-    fprintf(stderr, "Could not create target %s\n", name);
+    fprintf(stderr, "\tNOBITA\tERROR: Could not create target %s\n", name);
     return NULL;
   }
 
@@ -892,7 +902,8 @@ static nobita_pid nobita_proc_exec(char **cmd, char *joined_cmd) {
   id = fork();
   if (id == -1) {
     nobita_build_failed = true;
-    fprintf(stderr, "Creating the process\n'%s'\nFailed!\n", joined_cmd);
+    fprintf(stderr, "\tNOBITA\tERROR: Creating the process\n'%s'\nFailed!\n",
+            joined_cmd);
     return id;
   }
 
@@ -910,7 +921,8 @@ static nobita_pid nobita_proc_exec(char **cmd, char *joined_cmd) {
   if (!CreateProcessA(NULL, joined_cmd, NULL, NULL, false, 0, NULL, NULL, &s,
                       &p)) {
     nobita_build_failed = true;
-    fprintf(stderr, "Creating the process\n'%s'\nFailed!\n", joined_cmd);
+    fprintf(stderr, "\tNOBITA\tERROR: Creating the process\n'%s'\nFailed!\n",
+            joined_cmd);
     return id;
   } else
     return p.hProcess;
@@ -969,10 +981,12 @@ static void nobita_proc_wait_one(struct nobita_build *b) {
         if (status == WAIT_FAILED) {
 #endif /* _WIN32 */
           nobita_build_failed = true;
-          fprintf(stderr, "A process did not exit sucessfully, marking "
-                          "build as failed\n");
+          fprintf(
+              stderr,
+              "\tNOBITA\tERROR: A process did not exit sucessfully, marking "
+              "build as failed\n");
 
-          fprintf(stderr, "Cmd: %s\n", b->proc_names[i]);
+          fprintf(stderr, "\tNOBITA\tCmd: %s\n", b->proc_names[i]);
         }
 
         free(b->proc_names[i]);
@@ -989,28 +1003,28 @@ static void nobita_proc_wait_all(struct nobita_build *b) {
   for (size_t i = 0; i < b->proc_queue_used; i++) {
     int status = nobita_proc_wait(b->proc_queue[i], true);
 #ifndef _WIN32
-    if (!WIFEXITED(status) && !nobita_build_failed) {
+    if (!WIFEXITED(status)) {
       nobita_build_failed = true;
-      fprintf(stderr, "A process did not exit\n");
-      fprintf(stderr, "Cmd: %s\n", b->proc_names[i]);
+      fprintf(stderr, "\tNOBITA\tERROR: A process did not exit\n");
+      fprintf(stderr, "\tNOBITA\tCmd: %s\n", b->proc_names[i]);
     }
 
-    if (WEXITSTATUS(status) != EXIT_SUCCESS && !nobita_build_failed) {
+    if (WEXITSTATUS(status) != EXIT_SUCCESS) {
       nobita_build_failed = true;
-      fprintf(stderr, "A process did not exit successfully\n");
-      fprintf(stderr, "Cmd: %s\n", b->proc_names[i]);
+      fprintf(stderr, "\tNOBITA\tERROR: A process did not exit successfully\n");
+      fprintf(stderr, "\tNOBITA\tCmd: %s\n", b->proc_names[i]);
     }
 #else
-    if (status == WAIT_FAILED && !nobita_build_failed) {
+    if (status == WAIT_FAILED) {
       nobita_build_failed = true;
-      fprintf(stderr, "A process did not exit\n");
-      fprintf(stderr, "Cmd: %s\n", b->proc_names[i]);
+      fprintf(stderr, "\tNOBITA\tERROR: A process did not exit\n");
+      fprintf(stderr, "\tNOBITA\tCmd: %s\n", b->proc_names[i]);
     }
 
-    if (status != WAIT_OBJECT_0 && !nobita_build_failed) {
+    if (status != WAIT_OBJECT_0) {
       nobita_build_failed = true;
-      fprintf(stderr, "A process did not exit successfully\n");
-      fprintf(stderr, "Cmd: %s\n", b->proc_names[i]);
+      fprintf(stderr, "\tNOBITA\tERROR: A process did not exit successfully\n");
+      fprintf(stderr, "\tNOBITA\tCmd: %s\n", b->proc_names[i]);
     }
 
     CloseHandle(b->proc_queue[i]);
@@ -1030,7 +1044,9 @@ static void nobita_mkdir_recursive(const char *path) {
   char *p2 = nobita_strdup(path);
   if (p2 == NULL) {
     nobita_build_failed = true;
-    fprintf(stderr, "Could not copy path '%s' for mkdir recursive\n", path);
+    fprintf(stderr,
+            "\tNOBITA\tERROR: Could not copy path '%s' for mkdir recursive\n",
+            path);
     return;
   }
 
@@ -1136,7 +1152,12 @@ static bool nobita_build_objects(struct nobita_target *t) {
       vector_append(t, full_cmd, NULL);
 
       if (t->sources_used > 0) {
-        printf("\tCC\t%s\n", t->objects[i]);
+        char *ext = strrchr(t->sources[i], '.');
+        if (strcmp(ext, ".c") == 0)
+          printf("\tCC\t%s\n", t->objects[i]);
+        else if (strcmp(ext, ".cpp") == 0 || strcmp(ext, ".cc"))
+          printf("\tCXX\t%s\n", t->objects[i]);
+
         nobita_proc_append(t->b, t->full_cmd);
       }
 
@@ -1164,6 +1185,8 @@ static void nobita_set_exe(struct nobita_target *t, const char *output) {
     vector_append_vector(t, full_cmd, t, ldflags);
     break;
   }
+
+  printf("\tLD\t%s\n", output);
 }
 
 static void nobita_set_sharedlib(struct nobita_target *t, const char *output) {
@@ -1182,6 +1205,8 @@ static void nobita_set_sharedlib(struct nobita_target *t, const char *output) {
     vector_append_vector(t, full_cmd, t, ldflags);
     break;
   }
+
+  printf("\tLD\t%s\n", output);
 }
 
 static void nobita_set_staticlib(struct nobita_target *t, const char *output) {
@@ -1204,6 +1229,8 @@ static void nobita_set_staticlib(struct nobita_target *t, const char *output) {
     vector_append_vector(t, full_cmd, t, objects);
     break;
   }
+
+  printf("\tAR\t%s\n", output);
 }
 
 static void nobita_build_target(struct nobita_target *t) {
@@ -1216,25 +1243,24 @@ static void nobita_build_target(struct nobita_target *t) {
     rebuild = (!rebuild) ? ((struct nobita_target *)t->deps[i])->rebuilt : true;
   }
 
-  nobita_proc_wait_all(t->b);
+  if (t->deps_used > 0)
+    nobita_proc_wait_all(t->b);
 
-  if (t->target_type != NOBITA_EXECUTABLE) {
-    for (size_t i = 0; i < t->headers_used; i++) {
-      char *parent = t->headers[i].parent;
-      char *header = t->headers[i].header;
-      char *src = nobita_strjoinl(NOBITA_PATHSEP, parent, header, NULL);
-      char *dest = nobita_strjoinl(NOBITA_PATHSEP, t->b->include, header, NULL);
+  for (size_t i = 0; i < t->headers_used; i++) {
+    char *parent = t->headers[i].parent;
+    char *header = t->headers[i].header;
+    char *src = nobita_strjoinl(NOBITA_PATHSEP, parent, header, NULL);
+    char *dest = nobita_strjoinl(NOBITA_PATHSEP, t->b->include, header, NULL);
 
-      nobita_dirname(dest);
-      nobita_mkdir_recursive(dest);
-      *strchr(dest, 0) = *NOBITA_PATHSEP;
+    nobita_dirname(dest);
+    nobita_mkdir_recursive(dest);
+    *strchr(dest, 0) = *NOBITA_PATHSEP;
 
-      if (nobita_is_a_newer(src, dest))
-        nobita_cp(dest, src);
+    if (nobita_is_a_newer(src, dest))
+      nobita_cp(dest, src);
 
-      free(src);
-      free(dest);
-    }
+    free(src);
+    free(dest);
   }
 
   rebuild = nobita_build_objects(t);
@@ -1299,8 +1325,6 @@ static void nobita_build_target(struct nobita_target *t) {
 
     printf("\n");
     nobita_proc_wait_all(t->b);
-  } else {
-    printf("\tLD\t%s\n", output);
   }
 
   t->rebuilt = true;
@@ -1317,7 +1341,9 @@ static void nobita_cp(const char *dest, const char *src) {
   FILE *d = fopen(dest, "w");
   if (d == NULL) {
     nobita_build_failed = true;
-    fprintf(stderr, "Failed to open dest file '%s' in copying\n", dest);
+    fprintf(stderr,
+            "\tNOBITA\tERROR: Failed to open dest file '%s' in copying\n",
+            dest);
     return;
   }
 
@@ -1325,7 +1351,9 @@ static void nobita_cp(const char *dest, const char *src) {
   if (s == NULL) {
     nobita_build_failed = true;
     fclose(d);
-    fprintf(stderr, "Failed to open source file '%s' in copying\n", src);
+    fprintf(stderr,
+            "\tNOBITA\tERROR: Failed to open source file '%s' in copying\n",
+            src);
     return;
   }
 
@@ -1340,7 +1368,8 @@ static void nobita_cp(const char *dest, const char *src) {
     if (read != write) {
       nobita_build_failed = true;
       fprintf(stderr,
-              "Read and write counts for copying files %s -> %s did not "
+              "\tNOBITA\tERROR: Read and write counts for copying files %s -> "
+              "%s did not "
               "match\n",
               src, dest);
 
@@ -1375,8 +1404,8 @@ static char *nobita_strjoinl(const char *join, ...) {
   ret = malloc(len * sizeof(char));
   if (ret == NULL) {
     nobita_build_failed = true;
-    fprintf(stderr,
-            "Could not join strings using strjoinl as malloc returned NULL\n");
+    fprintf(stderr, "\tNOBITA\tERROR: Could not join strings using strjoinl as "
+                    "malloc returned NULL\n");
 
     return ret;
   }
@@ -1409,8 +1438,8 @@ static char *nobita_strjoinv(const char *join, char **v) {
   ret = malloc(len);
   if (ret == NULL) {
     nobita_build_failed = true;
-    fprintf(stderr,
-            "Could not join strings using strjoinv as malloc returned NULL\n");
+    fprintf(stderr, "\tNOBITA\tERROR: Could not join strings using strjoinv as "
+                    "malloc returned NULL\n");
 
     return ret;
   }
@@ -1436,7 +1465,8 @@ static char *nobita_getcwd(void) {
 
   if (ret == NULL) {
     nobita_build_failed = true;
-    fprintf(stderr, "Couldn't get current working directory\n");
+    fprintf(stderr,
+            "\tNOBITA\tERROR: Couldn't get current working directory\n");
   }
 
 #ifdef _WIN32
@@ -1466,7 +1496,8 @@ static char *nobita_strdup(const char *s) {
   char *ret = malloc((strlen(s) + 1) * sizeof(char));
   if (ret == NULL) {
     nobita_build_failed = true;
-    fprintf(stderr, "Could not duplicate a string as malloc returned NULL\n");
+    fprintf(stderr, "\tNOBITA\tERROR: Could not duplicate a string as malloc "
+                    "returned NULL\n");
   } else {
     strcpy(ret, s);
   }
@@ -1494,8 +1525,8 @@ int main(int argc, char **argv) {
       return EXIT_SUCCESS;
     } else {
       if (sscanf(argv[1], "%" SCNu64, &nobita_max_proc_count) != 1) {
-        fprintf(stderr, "Invalid number for proc_count\n");
-        printf("nobita build usage: %s proc_count prefix\n", argv[0]);
+        fprintf(stderr, "\tNOBITA\tERROR: Invalid number for proc_count\n");
+        printf("\tNOBITA\tnobita build usage: %s proc_count prefix\n", argv[0]);
         return EXIT_FAILURE;
       }
     }
@@ -1505,8 +1536,8 @@ int main(int argc, char **argv) {
   char *cwd = nobita_getcwd();
   if (argc >= 3) {
     if (strlen(argv[2]) == 0) {
-      fprintf(stderr, "Invalid prefix length 0\n");
-      printf("nobita build usage: %s proc_count prefix\n", argv[0]);
+      fprintf(stderr, "\tNOBITA\tERROR: Invalid prefix length 0\n");
+      printf("\tNOBITA\tnobita build usage: %s proc_count prefix\n", argv[0]);
       free(ced);
       free(cwd);
       return EXIT_FAILURE;
@@ -1514,16 +1545,18 @@ int main(int argc, char **argv) {
 
 #ifndef _WIN32
     if (argv[2][0] != '/') {
-      fprintf(stderr, "Invalid prefix (not an absolute path)\n");
-      printf("nobita build usage: %s proc_count prefix\n", argv[0]);
+      fprintf(stderr,
+              "\tNOBITA\tERROR: Invalid prefix (not an absolute path)\n");
+      printf("\tNOBITA\tnobita build usage: %s proc_count prefix\n", argv[0]);
       free(ced);
       free(cwd);
       return EXIT_FAILURE;
     }
 #else
     if (argv[2][1] != ':' && argv[2][1] != '\\') {
-      fprintf(stderr, "Invalid prefix (not an absolute path)\n");
-      printf("nobita build usage: %s proc_count prefix\n", argv[0]);
+      fprintf(stderr,
+              "\tNOBITA\tERROR: Invalid prefix (not an absolute path)\n");
+      printf("\tNOBITA\tnobita build usage: %s proc_count prefix\n", argv[0]);
       free(ced);
       free(cwd);
       return EXIT_FAILURE;
